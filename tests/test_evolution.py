@@ -298,11 +298,13 @@ def test_redline_snapshot_and_verify(tmp_path: Path):
 def test_graph_observe_does_not_break_run(repo):
     import asyncio
 
-    from yunpai_orchestrator.graph import YunpaiGraph
-    from yunpai_orchestrator.models import new_state
+    from yunpai_orchestrator.checkpointer import memory_checkpointer
+    from yunpai_orchestrator.graph import build_graph, default_deps
+    from yunpai_orchestrator.state import new_state_v2
 
-    graph = YunpaiGraph(evolution=repo)
-    state = asyncio.run(graph.run(new_state({"message": "你好"})))
+    graph = build_graph(default_deps(evolution=repo), checkpointer=memory_checkpointer())
+    state0 = new_state_v2({"message": "你好"})
+    state = asyncio.run(graph.ainvoke(state0, {"configurable": {"thread_id": state0["thread_id"]}, "recursion_limit": 24}))
     assert state["status"] == "completed"
     # 观察钩子已挂（无步骤的 chat 也会执行一次观察）。
     assert repo is not None

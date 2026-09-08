@@ -1,31 +1,33 @@
+"""存储层：RunRepository 持久化与租户过滤（v2 口径，替换旧 YunpaiGraph 版本）。"""
 import pytest
 
-from yunpai_orchestrator.graph import YunpaiGraph
-from yunpai_orchestrator.models import new_state
-from yunpai_orchestrator.repository import SQLiteRunRepository
-
-from test_graph import workflow_request
-
-
-@pytest.mark.asyncio
-async def test_sqlite_repository_recovers_gate_across_graph_instances(tmp_path):
-    path = tmp_path / "runs.sqlite"
-    first = YunpaiGraph(repository=SQLiteRunRepository(path))
-    state = await first.run(new_state(workflow_request()))
-    restored = first.repository.get(state["run_id"])
-
-    second = YunpaiGraph(repository=SQLiteRunRepository(path))
-    resumed = await second.resume(restored, "approve", actor="data-steward")
-    assert resumed["pending_gate"]["type"] == "engineering"
-    assert resumed["approvals"][0]["actor"] == "data-steward"
-    assert second.repository.get(state["run_id"])["current_step"] == "run_bom_sop_workflow"
+from yunpai_orchestrator.repository import InMemoryRunRepository, SQLiteRunRepository
+from yunpai_orchestrator.state import new_state_v2
 
 
 def test_sqlite_repository_tenant_filter(tmp_path):
     repository = SQLiteRunRepository(tmp_path / "runs.sqlite")
     for tenant in ("a", "b"):
-        state = new_state({"message": "hello"}, tenant_id=tenant)
+        state = new_state_v2({"message": "hello"}, tenant_id=tenant)
         state["status"] = "completed"
         repository.save(state)
     assert len(repository.list()) == 2
-    assert [state["tenant_id"] for state in repository.list(tenant_id="a")] == ["a"]
+    assert [s["tenant_id"] for s in repository.list(tenant_id="a")] == ["a"]
+
+
+def test_sqlite_repository_roundtrip_preserves_gate(tmp_path):
+    repository = SQLiteRunRepository(tmp_path / "runs.sqlite")
+    state = new_state_v2({"message": "m"})
+    state["pending_gate"] = {"type": "engineering", "tool": "run_bom_sop_workflow"}
+    state["status"] = "waiting_human"
+    repository.save(state)
+    restored = repository.get(state["run_id"])
+    assert restored["pending_gate"]["type"] == "engineering"
+    assert restored["thread_id"] == state["thread_id"]
+
+
+def test_in_memory_repository_basic():
+    repository = InMemoryRunRepository()
+    state = new_state_v2({"message": "m"})
+    repository.save(state)
+    assert repository.get(state["run_id"])["run_id"] == state["run_id"]

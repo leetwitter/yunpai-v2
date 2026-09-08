@@ -28,8 +28,8 @@ class QwenConfig:
     def from_env(cls) -> "QwenConfig":
         return cls(
             enabled=_env_bool("QWEN_ROUTER_ENABLED", True),
-            base_url=os.getenv("QWEN_BASE_URL", "http://127.0.0.1:18085/v1").rstrip("/"),
-            model=os.getenv("QWEN_MODEL", "qwen3.6-35b-a3b-fp8-gpu0-200k"),
+            base_url=os.getenv("QWEN_BASE_URL", "http://127.0.0.1:8088/v1").rstrip("/"),  # v2 单一默认（config.LLMConfig 同源）
+            model=os.getenv("QWEN_MODEL", "qwen3.8-27b"),
             api_key=os.getenv("QWEN_API_KEY", ""),
             timeout_s=float(os.getenv("QWEN_TIMEOUT_S", "45")),
         )

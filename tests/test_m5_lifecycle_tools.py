@@ -79,7 +79,7 @@ def _release_plan(repo, ctx, scenario_id="SC-LIFE"):
 
 
 def _schema(name):
-    manifest = json.loads(Path("src/yunpai_orchestrator/manifests/m5.json").read_text(encoding="utf-8"))
+    manifest = json.loads(Path("registry-manifests/m5.json").read_text(encoding="utf-8"))
     tool = next(t for t in manifest["tools"] if t["name"] == name)
     return tool["output_schema"]
 

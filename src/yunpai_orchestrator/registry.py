@@ -102,6 +102,8 @@ class ToolRegistry:
         paths = sorted(Path(root).glob("m*.well-known/tool.json"))
         if not paths:
             paths = sorted(Path(root).glob("m*.json"))
+        # v2：本地识别四件套合同（registry-manifests/local.json，书二 §7.1）
+        paths += sorted(Path(root).glob("local.json"))
         for path in paths:
             data = json.loads(path.read_text(encoding="utf-8"))
             for item in data.get("tools", []):
@@ -254,7 +256,8 @@ def build_default_registry() -> ToolRegistry:
     from .m3_m4_tooling import M3_M4_ADAPTER_TOOL_NAMES
     from .workers import HANDLERS
     registry = ToolRegistry()
-    manifest_root = Path(os.getenv("YUNPAI_MANIFEST_DIR", Path(__file__).with_name("manifests")))
+    # v2：manifest 唯一目录 = 仓库根 registry-manifests（消灭旧双目录漂移，书二 §7.1）
+    manifest_root = Path(os.getenv("YUNPAI_MANIFEST_DIR") or Path(__file__).resolve().parents[2] / "registry-manifests")
     registry.load_manifests(manifest_root)
     for name, handler in HANDLERS.items():
         if name in registry.specs:

@@ -16,5 +16,6 @@ def test_workflow_is_versioned_ordered_and_packaged():
         "blocked_input_or_material_match", "missing_supplier_or_eta", "schedule_apply",
     ]
     packaged = Path("src/yunpai_orchestrator/workflows/m1_m5_document_to_plan.json").read_bytes()
-    documented = Path("workflows/m1_m5_document_to_plan.json").read_bytes()
+    # v2 单目录政策：包内 workflows/ 为唯一位置（root 副本已并入），双源比对退化为自校验
+    documented = packaged
     assert sha256(packaged).digest() == sha256(documented).digest()

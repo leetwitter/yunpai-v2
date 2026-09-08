@@ -16,7 +16,7 @@ from yunpai_orchestrator.registry import build_default_registry
 
 
 def _m0_schema(name: str) -> dict:
-    data = json.load(open("src/yunpai_orchestrator/manifests/m0.json"))
+    data = json.load(open("registry-manifests/m0.json"))
     return next(tool for tool in data["tools"] if tool["name"] == name)
 
 

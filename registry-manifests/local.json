@@ -1,0 +1,182 @@
+{
+  "module": "m0",
+  "base_url": "",
+  "tools": [
+    {
+      "name": "sample_file",
+      "description": "确定性采样：表头+前 N 行 / PDF 渲染图 / 多 sheet；本地识别件套，永不被 HTTP 覆盖",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "content_b64"
+        ],
+        "properties": {
+          "content_b64": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "sample_rows": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object"
+      },
+      "execution": "sync",
+      "type": "tool",
+      "side_effect": "none",
+      "review_gate": "none",
+      "tags": [
+        "recognition",
+        "local-only"
+      ]
+    },
+    {
+      "name": "ingest_recognized",
+      "description": "自描述表落库：PII 脱敏 + sha256 幂等，写入 recognized 库",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "kind",
+          "filename",
+          "sha256",
+          "columns",
+          "rows"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "order",
+              "bom",
+              "sop",
+              "inventory",
+              "equipment",
+              "station",
+              "worker",
+              "wage",
+              "personnel_roster",
+              "production_daily_report",
+              "rule_config",
+              "engineering_document",
+              "engineering_drawing",
+              "other"
+            ]
+          },
+          "filename": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "columns": {
+            "type": "array"
+          },
+          "rows": {
+            "type": "array"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object"
+      },
+      "execution": "sync",
+      "type": "tool",
+      "side_effect": "local_write",
+      "review_gate": "none",
+      "tags": [
+        "recognition",
+        "local-only"
+      ]
+    },
+    {
+      "name": "query_recognized_table",
+      "description": "按列过滤/聚合查询已落库的自描述表",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "filters": {
+            "type": "object"
+          },
+          "group_by": {
+            "type": "string"
+          },
+          "aggregate": {
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "enum": [
+                  "count",
+                  "sum",
+                  "avg"
+                ]
+              },
+              "field": {
+                "type": "string"
+              }
+            }
+          },
+          "top_k": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object"
+      },
+      "execution": "sync",
+      "type": "tool",
+      "side_effect": "none",
+      "review_gate": "none",
+      "tags": [
+        "recognition",
+        "local-only"
+      ]
+    },
+    {
+      "name": "ingest_canonical",
+      "description": "canonical 候选落库：schema 校验 + 脱敏 + 幂等，可选发布 M0",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "entity_type",
+          "records"
+        ],
+        "properties": {
+          "entity_type": {
+            "type": "string"
+          },
+          "records": {
+            "type": "array"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "publish": {
+            "type": "boolean"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object"
+      },
+      "execution": "sync",
+      "type": "tool",
+      "side_effect": "local_write",
+      "review_gate": "candidate",
+      "tags": [
+        "recognition",
+        "local-only"
+      ]
+    }
+  ]
+}

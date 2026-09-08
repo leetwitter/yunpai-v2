@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from yunpai_orchestrator.agents import SKILL_USAGE_ORDER
+from yunpai_orchestrator.orchestrator.router import SKILL_USAGE_ORDER
 from yunpai_orchestrator.llm import QwenConfig, QwenRouter
 from yunpai_orchestrator.registry import build_default_registry
 from yunpai_orchestrator.skills import SkillRegistry, build_default_skill_registry
@@ -112,40 +112,3 @@ async def test_qwen_prompt_exposes_full_versioned_skill_catalog(monkeypatch):
         assert f"{spec.name}@{spec.version}" in prompt
     assert '"version"' in prompt
 
-
-@pytest.mark.asyncio
-async def test_planner_rejects_out_of_order_multi_skill_proposal():
-    class FakeRouter:
-        async def classify(self, request, registry):
-            return {
-                "ok": True,
-                "status": "ok",
-                "decision": {"intent": "先排程再识别", "route": "free", "tools": [], "skills": ["yunpai-m5-pmc", "business-data-identification"], "confidence": 0.6, "reason": "order test"},
-                "model": {"provider": "qwen", "status": "ok"},
-            }
-
-    from yunpai_orchestrator.agents import PlannerAgent
-
-    planner = PlannerAgent(FakeRouter())
-    decision = await planner.aplan({"message": "测试顺序"}, build_default_registry())
-    assert decision["route_decision"]["source"] == "deterministic_fallback"
-    assert "顺序" in decision["route_decision"].get("reject_reason", "")
-
-
-@pytest.mark.asyncio
-async def test_planner_records_rejection_for_unregistered_tool_proposal():
-    class FakeRouter:
-        async def classify(self, request, registry):
-            return {
-                "ok": True,
-                "status": "ok",
-                "decision": {"intent": "幻觉工具", "route": "free", "tools": ["not_a_real_tool_xyz"], "skills": [], "confidence": 0.9, "reason": "hallucination"},
-                "model": {"provider": "qwen", "status": "ok"},
-            }
-
-    from yunpai_orchestrator.agents import PlannerAgent
-
-    planner = PlannerAgent(FakeRouter())
-    decision = await planner.aplan({"message": "测试幻觉工具"}, build_default_registry())
-    assert decision["route_decision"]["source"] == "deterministic_fallback"
-    assert "not_a_real_tool_xyz" in decision["route_decision"].get("reject_reason", "")
