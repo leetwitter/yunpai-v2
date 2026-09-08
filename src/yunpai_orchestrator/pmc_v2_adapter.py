@@ -198,7 +198,7 @@ def build_bundle(payload: dict[str, Any]) -> dict[str, Any]:
         return supplied
     orders = []
     for raw in payload.get("orders") or []:
-        orders.append(build_order_snapshot({"order_id": str(raw.get("order_id") or ""), "order_no": str(raw.get("order_no") or raw.get("order_id") or ""), "lines": [{"order_line_id": raw.get("order_line_id") or f"{raw.get('order_id')}::L1", "product_code": str(raw.get("product_id") or raw.get("product_code") or ""), "qty": raw.get("quantity"), "uom": raw.get("uom") or "PCS", "due_date": raw.get("due_time"), "priority": raw.get("priority")}]}, snapshot_id=f"SNAP-ORD-{raw.get('order_id')}"))
+        orders.append(build_order_snapshot({"order_id": str(raw.get("order_id") or ""), "order_no": str(raw.get("order_no") or raw.get("order_id") or ""), "lines": [{"order_line_id": raw.get("order_line_id") or f"{raw.get('order_id')}::L1", "product_code": str(raw.get("product_id") or raw.get("product_code") or ""), "qty": raw.get("quantity"), "uom": raw.get("uom") or "PCS", "due_date": raw.get("due_time"), "priority": raw.get("priority")}]}, snapshot_id=f"SNAP-ORD-{raw.get('order_id')}-{raw.get('order_line_id') or 'L1'}"))
     calendar = _calendar(payload)
     supply_entries = payload.get("supply_entries") or _supply_entries(payload)
     if strict and not supply_entries and not payload.get("order_kitting"):

@@ -75,7 +75,15 @@ def make_worker_execute(deps) -> Callable:
             result = _error_envelope(tool, code, message)
             failed = True
 
-        status = "failed" if failed else ("blocked" if result.get("code") == "BLOCKED_INPUT" else "completed")
+        code = str(result.get("code") or "")
+        if failed:
+            status = "failed"
+        elif code == "BLOCKED_INPUT":
+            status = "blocked"
+        elif result.get("success") is False:
+            status = "failed"  # 非阻塞失败信封（success=False）同样不得当成功
+        else:
+            status = "completed"
         trace.append({"event": "react.observation", "agent": "worker", "tool": tool,
                       "status": status, "at": now_iso()})
         step = {**step,

@@ -106,8 +106,17 @@ def create_app(*, repository: Any = None, registry: Any = None, identity_store: 
     graph_holder: dict[str, Any] = {}
 
     async def _build_graph_async():
-        # AsyncSqliteSaver 必须在运行中的事件循环内构造（绑定 runner 循环）
-        saver = checkpointer if checkpointer is not None else default_checkpointer(cfg.storage.run_db)
+        # AsyncSqliteSaver 必须在运行中的事件循环内构造（绑定 runner 循环）。
+        # checkpoint 与 runs 表分库：同库时 saver（loop 线程）与 RunRepository（请求
+        # 线程池）跨线程写同一 sqlite 文件，实测 database-is-locked 竞争会偶发吞掉
+        # Gate 挂起镜像，导致 run 记录丢失（GET 404/resume 不可用）。
+        if checkpointer is not None:
+            saver = checkpointer
+        else:
+            ckpt_path = str(cfg.storage.run_db)
+            if ckpt_path.lower().endswith(".sqlite"):
+                ckpt_path = ckpt_path[: -len(".sqlite")] + ".checkpoint.sqlite"
+            saver = default_checkpointer(ckpt_path)
         return build_graph(deps, checkpointer=saver)
 
     def _graph():

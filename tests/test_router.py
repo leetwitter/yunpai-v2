@@ -113,6 +113,14 @@ async def test_llm_invisible_tool_proposal_rejected_to_fallback():
     assert d.source == "deterministic_fallback"
 
 
+@pytest.mark.asyncio
+async def test_llm_free_with_empty_tools_and_skills_rejected():
+    """free 路由空工具+空技能 → 拒绝回退（否则空转出「0 步完成」）。"""
+    router = _router_with({"route": "free", "tools": [], "skills": [], "confidence": 0.9, "reason": "x"})
+    d = await router.decide({"request": {"message": "x"}, "attachments": []})
+    assert d.source == "deterministic_fallback"
+
+
 def test_parse_decision_keeps_workflow_id():
     decision = QwenRouter._parse_decision(
         '{"intent":"i","route":"workflow","workflow_id":"canonical_to_m5",'

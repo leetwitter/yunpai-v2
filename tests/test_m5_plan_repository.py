@@ -65,6 +65,33 @@ def test_six_snapshot_kinds_persist_and_read_back(repo):
     assert repo.list_snapshots(payload["scenario_id"])[0]["tenant_id"] == "tenant-a"
 
 
+def test_multi_line_order_snapshots_get_distinct_ids(repo):
+    """多行订单（bridge 按行展开、同 order_id）不得生成重复 SNAP-ORD-{order_id}
+    导致 store 批内 UNIQUE 冲突（E2E 实测 IntegrityError）。"""
+    payload = _strict_payload()
+    payload["scenario_id"] = "SC-MULTILINE"
+    payload["orders"] = [
+        {"order_id": "SO-MULTI", "order_line_id": "SO-MULTI::L1", "product_id": "P1",
+         "quantity": 2, "uom": "PCS", "due_time": "2026-09-10T17:00:00+08:00"},
+        {"order_id": "SO-MULTI", "order_line_id": "SO-MULTI::L2", "product_id": "P1",
+         "quantity": 3, "uom": "PCS", "due_time": "2026-09-10T17:00:00+08:00"},
+    ]
+    payload["supply_entries"] = [
+        {"order_line_id": "SO-MULTI::L1", "op_code": "OP-10", "readiness": "READY",
+         "requirement_ref": "MAT-1", "inventory_snapshot_ref": "INV-1"},
+        {"order_line_id": "SO-MULTI::L2", "op_code": "OP-10", "readiness": "READY",
+         "requirement_ref": "MAT-1", "inventory_snapshot_ref": "INV-1"},
+    ]
+    result = run_pmc_v2(payload)
+    assert result["success"] is True, result.get("errors")
+    bundle = result["data"]["input_package"]
+    ids = [o["snapshot_id"] for o in bundle["order_snapshots"]]
+    assert len(ids) == 2 and len(set(ids)) == 2, f"同行订单快照 id 必须唯一: {ids}"
+    records = repo.store_snapshots(payload["scenario_id"], bundle,
+                                   tenant_id="tenant-a", task_id="task-multi")
+    assert len(records) == 7  # 2 个 order 快照（按行）+ 其余五类各 1
+
+
 def test_plan_save_read_with_hashes(repo):
     payload = _strict_payload()
     result, bundle, _ = _solved(repo, payload)

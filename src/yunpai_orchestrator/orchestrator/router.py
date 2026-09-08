@@ -133,6 +133,8 @@ class Router:
         if route == "free":
             visible = set(visible_tool_names(self.registry))
             skill_names = set(self.skills.specs)
+            if not tools and not skills:
+                return None  # free 必须至少一个工具或技能，否则会空转出「0 步完成」
             if any(t not in visible for t in tools):
                 return None
             if any(s not in skill_names for s in skills):

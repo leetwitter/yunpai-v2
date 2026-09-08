@@ -99,6 +99,123 @@ def test_gate_reject_fails_run():
         rules.RULES.pop("list_m5_schedules", None)
 
 
+def test_gate_invalid_decision_reprompts_without_deadlock():
+    """非法决策不抛异常、不卡死 resume 通道：再次挂起（gate_invalid 提示）→
+    后续合法 resume 正常送达（langgraph 会固化抛错 resume 值，必须绕开）。"""
+    rules.RULES["list_m5_schedules"] = [
+        rules.Check("status", "eq", "success", action="gate:blocked_input", reason="测试注入数据门")]
+    try:
+        import asyncio
+        from langgraph.types import Interrupt
+
+        graph = build_graph(_deps(), checkpointer=MemorySaver())
+        state = new_state_v2({"message": "查计划", "tools": ["list_m5_schedules"]})
+        config = {"configurable": {"thread_id": state["thread_id"]}, "recursion_limit": 64}
+
+        out = asyncio.run(graph.ainvoke(state, config))
+        assert "__interrupt__" in out, "应挂起在 blocked_input 门"
+
+        # ① 非法决策（blocked_input 不接受 approve）：不抛异常，再次挂起并带提示
+        out2 = asyncio.run(graph.ainvoke(
+            Command(resume={"decision": "approve", "actor": "t", "roles": ["admin"]}), config))
+        assert "__interrupt__" in out2, "非法决策应再次挂起而非抛错"
+        info = out2["__interrupt__"][0].value if isinstance(out2["__interrupt__"][0], Interrupt) \
+            else out2["__interrupt__"][0]
+        assert info.get("type") == "gate_invalid"
+        assert "approve" in str(info.get("error"))
+
+        # ② 合法 retry 正常送达：步骤重派发 → 工具重跑 → 门再次打开（结果未变）
+        out3 = asyncio.run(graph.ainvoke(
+            Command(resume={"decision": "retry", "actor": "t", "roles": ["admin"]}), config))
+        assert "__interrupt__" in out3, "retry 重派发后门应再次打开"
+
+        # ③ 合法 reject 送达：run 失败并留痕
+        out4 = asyncio.run(graph.ainvoke(
+            Command(resume={"decision": "reject", "actor": "t", "roles": ["admin"]}), config))
+        assert out4["status"] == "failed"
+        assert any(e.get("code") == "GATE_REJECTED" for e in out4.get("errors", []))
+    finally:
+        rules.RULES.pop("list_m5_schedules", None)
+
+
+def test_engineering_gate_rule_fires_on_m2_draft():
+    """M2 草稿（success=True）→ 规则表开 engineering 门（M2→M3 只消费已批准 BOM 的入口）。"""
+    finding = next(
+        (f for f in rules.evaluate("run_bom_sop_workflow", {"success": True, "status": "draft_created"})
+         if f.get("gate") == "engineering"), None)
+    assert finding, "m2 草稿应触发 engineering 门"
+    assert not rules.evaluate("run_bom_sop_workflow", {"success": None}), "无 success 不触发"
+
+
+def test_engineering_approval_stamp():
+    """工程门 approve 的 outputs 落点：bom/sop generation 写 approval_status=approved
+    （顶层与 data 嵌套两份都盖）；非 engineering 门不动 outputs。"""
+    from yunpai_orchestrator.graph import _stamp_engineering_approval
+
+    state = {"outputs": {"run_bom_sop_workflow": {
+        "status": "draft_created",
+        "bom_generation": {"bom_lines": [{"material_code": "M-1"}]},
+        "sop_generation": {"status": "draft"},
+        "data": {"bom_generation": {"bom_lines": [{"material_code": "M-1"}]},
+                 "sop_generation": {"status": "draft"}}}}}
+    stamped = _stamp_engineering_approval(state, {"type": "engineering", "tool": "run_bom_sop_workflow"})
+    assert stamped is not None
+    env = stamped["run_bom_sop_workflow"]
+    for holder in (env, env["data"]):
+        assert holder["bom_generation"]["approval_status"] == "approved"
+        assert holder["sop_generation"]["approval_status"] == "approved"
+    # 原状态不被原地篡改（LangGraph 节点返回增量语义）
+    assert "approval_status" not in state["outputs"]["run_bom_sop_workflow"]["bom_generation"]
+    # 非 engineering 门 / 无可盖章节 → None
+    assert _stamp_engineering_approval(state, {"type": "authorization", "tool": "run_bom_sop_workflow"}) is None
+    assert _stamp_engineering_approval({"outputs": {"x": {}}}, {"type": "engineering", "tool": "x"}) is None
+
+
+def test_tool_exception_fails_run_not_silent_complete():
+    """工具异常（无 fail 规则）不得被静默标 completed：重试耗尽后 run 应 failed。"""
+    import asyncio
+
+    deps = _deps()
+
+    async def boom(tool, payload, ctx):
+        raise RuntimeError("synthetic boom")
+
+    deps.registry.call = boom
+    graph = build_graph(deps, checkpointer=MemorySaver())
+    state = new_state_v2({"message": "x", "tools": ["query_recognized_table"],
+                          "query_recognized_table": {}})
+    out = asyncio.run(graph.ainvoke(
+        state, {"configurable": {"thread_id": state["thread_id"]}, "recursion_limit": 64}))
+    assert out["status"] == "failed"
+    step = [p for p in out["plan"] if p.get("tool") == "query_recognized_table"][0]
+    assert step["status"] == "failed"
+    assert out["retry_counts"].get("tool-query_recognized_table") == deps.max_step_retries
+    assert any(e.get("code") == "UPSTREAM_UNAVAILABLE" for e in out.get("errors", []))
+
+
+def test_tool_exception_retry_recovers_to_completed():
+    """瞬态异常：重试余量内恢复 → run completed（验证异常重试路径正向）。"""
+    import asyncio
+
+    calls = {"n": 0}
+    deps = _deps()
+
+    async def flaky(tool, payload, ctx):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise RuntimeError("transient")
+        return {"success": True, "data": {"ok": True}}
+
+    deps.registry.call = flaky
+    graph = build_graph(deps, checkpointer=MemorySaver())
+    state = new_state_v2({"message": "x", "tools": ["query_recognized_table"],
+                          "query_recognized_table": {}})
+    out = asyncio.run(graph.ainvoke(
+        state, {"configurable": {"thread_id": state["thread_id"]}, "recursion_limit": 64}))
+    assert out["status"] == "completed"
+    assert calls["n"] == 3  # 1 次初始 + 2 次重试
+
+
 def test_memory_thread_continuity():
     """同 thread_id 两次 run：第二次能看到第一轮的 assistant 消息（跨 run 记忆）。"""
     saver = MemorySaver()

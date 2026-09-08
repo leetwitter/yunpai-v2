@@ -632,7 +632,7 @@ def _replan_apply_event(base_bundle: dict, event: dict, plan_start: str | None) 
                     "due_date": raw.get("due_time"),
                     "priority": raw.get("priority"),
                 }],
-            }, snapshot_id=f"SNAP-ORD-{oid}"))
+            }, snapshot_id=f"SNAP-ORD-{oid}-{raw.get('order_line_id') or 'L1'}"))
     elif event_type == "order_cancel":
         cancelled = {str(x) for x in event_payload.get("order_ids", [])}
         orders[:] = [o for o in orders if str(o.get("order_id")) not in cancelled]

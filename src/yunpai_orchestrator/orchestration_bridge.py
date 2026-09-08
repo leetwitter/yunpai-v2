@@ -641,11 +641,12 @@ def _assemble_m5_bundle(state: RunState) -> tuple[dict[str, Any] | None, dict[st
         "due_date": order.get("due_date"), "priority": "normal",
     }]
     orders: list[dict[str, Any]] = []
-    for line in lines:
+    for index, line in enumerate(lines, start=1):
         orders.append({
             "order_id": str(order.get("order_id") or ""),
             "order_no": str(order.get("order_no") or order.get("order_id") or ""),
-            "order_line_id": str(line.get("order_line_id") or f"{order.get('order_id')}::L1"),
+            # 行号缺省按序唯一：多行订单若统一兜底 ::L1 会让 m5 快照批内撞 UNIQUE
+            "order_line_id": str(line.get("order_line_id") or f"{order.get('order_id')}::L{index}"),
             "product_code": str(line.get("product_code") or product_code or ""),
             "quantity": line.get("qty") or line.get("quantity") or order.get("quantity") or 0,
             "uom": str(line.get("uom") or "PCS"),

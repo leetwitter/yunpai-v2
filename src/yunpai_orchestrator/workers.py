@@ -404,6 +404,7 @@ async def m2_bom(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]
         sop_effective_to=payload.get("sop_effective_to"),
     )
     return {
+        "success": True,
         "status": "draft_created", "run_id": f"m2-{ctx['task_id'][-10:]}",
         "workflow_sequence": ["parse_sources", "history_search", "match_bom_sop", "bom_generate", "sop_generate"],
         "bom_generation": {"product_code": profile["product_code"], "bom_version": "draft-1", "bom_lines": lines, "assumptions": [], "duplicate_material_codes": duplicate_codes, "evidence": [_evidence("m2", "bom_lines", "受控 BOM 输入")]},

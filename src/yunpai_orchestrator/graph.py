@@ -149,6 +149,38 @@ def chat_answer_node(deps: GraphDeps) -> Callable:
     return _node
 
 
+def _stamp_engineering_approval(state: dict[str, Any], gate: dict[str, Any]) -> dict[str, Any] | None:
+    """工程门批准 → 在该工具产出的 bom/sop generation 上写入 approval_status=approved。
+
+    bridge.read_approved_bom/read_approved_route 只消费已批准 BOM/route，
+    此处是「批准」动作落到 outputs 的唯一写入点；非 engineering 门不改 outputs。
+    """
+    if str(gate.get("type")) != "engineering":
+        return None
+    tool = str(gate.get("tool") or "")
+    outputs = dict(state.get("outputs") or {})
+    envelope = outputs.get(tool)
+    if not isinstance(envelope, dict):
+        return None
+    envelope = dict(envelope)
+    holders = [envelope]
+    if isinstance(envelope.get("data"), dict):
+        data = dict(envelope["data"])
+        envelope["data"] = data
+        holders.append(data)
+    changed = False
+    for holder in holders:
+        for section in ("bom_generation", "sop_generation"):
+            block = holder.get(section)
+            if isinstance(block, dict):
+                holder[section] = {**block, "approval_status": "approved"}
+                changed = True
+    if not changed:
+        return None
+    outputs[tool] = envelope
+    return outputs
+
+
 def reviewer_check_node(deps: GraphDeps) -> Callable:
     async def _node(state: RunStateV2) -> dict[str, Any]:
         engine = deps.engine
@@ -173,21 +205,45 @@ def reviewer_check_node(deps: GraphDeps) -> Callable:
             gate = gate_mod.make_gate(gate_finding["gate"], tool, gate_finding["reason"],
                                       step_id=step_id,
                                       payload_digest=str(summarize(result))[:200])
-            # 挂起前把 waiting_human 镜像写入 RunRepository（前端/GET 可见；节点返回前的 side-effect）
+            # 挂起前把 waiting_human 镜像写入 RunRepository（前端/GET 可见；节点返回前的 side-effect）。
+            # checkpointer 与 runs 表同库（sqlite），写锁竞争会让单次 save 偶发失败且被吞，
+            # 造成 run 记录丢失（GET 404/resume 不可用）——重试+退避后再放弃并告警。
             if deps.repository is not None:
-                try:
-                    deps.repository.save(_jsonable_state({**state, "pending_gate": gate, "status": "waiting_human"}))
-                except Exception:
-                    pass
+                import logging
+                import time as _time
+                mirrored = {**state, "pending_gate": gate, "status": "waiting_human"}
+                for attempt in range(3):
+                    try:
+                        deps.repository.save(_jsonable_state(mirrored))
+                        break
+                    except Exception:
+                        if attempt == 2:
+                            logging.getLogger("yunpai.agent").warning(
+                                "gate mirror save failed after retries: run=%s gate=%s",
+                                state.get("run_id"), gate.get("type"), exc_info=True)
+                        else:
+                            _time.sleep(0.25)
             decision = interrupt({"type": "gate_pending", "gate": gate})  # ← 挂起点
-            updates = gate_mod.apply_decision(state, gate, dict(decision or {}))
+            # 非法决策/角色不足不得抛异常：节点在 resume 后抛错会把该 resume 值固化进
+            # checkpoint，之后任何 resume 都不再送达（langgraph 实测，Gate 通道被卡死）；
+            # 因此改为再次挂起并附错误提示，等待下一次合法决策。
+            while True:
+                try:
+                    updates = gate_mod.apply_decision(state, gate, dict(decision or {}))
+                    break
+                except gate_mod.GateError as exc:
+                    decision = interrupt({"type": "gate_invalid", "gate": gate, "error": str(exc)})
             usage_feedback.on_gate_decision(deps.evolution, state, gate, dict(decision or {}))
             normalized = gate_mod.validate_resume_decision(str(gate.get("type")),
                                                            str((decision or {}).get("decision") or ""))
             if normalized == "approve":
                 plan = engine.mark(plan, step_id, "completed")
                 step = {**step, "status": "completed", "finished_at": now_iso()}
-                return {**base, **updates, "plan": plan, "current_step": step}
+                updates = {**base, **updates, "plan": plan, "current_step": step}
+                stamped = _stamp_engineering_approval(state, gate)
+                if stamped is not None:
+                    updates["outputs"] = stamped
+                return updates
             if normalized == "reject":
                 plan = engine.mark(plan, step_id, "skipped")
                 step = {**step, "status": "skipped", "finished_at": now_iso()}
@@ -212,6 +268,22 @@ def reviewer_check_node(deps: GraphDeps) -> Callable:
             step = {**step, "status": "failed", "finished_at": now_iso()}
             return {**base, "plan": plan, "current_step": step, "status": "failed"}
 
+        # 工具异常（executor 已标 failed，未命中 fail 规则）：重试余量内重试，否则失败。
+        # 不得静默标 completed——否则 TOOL_ERROR 会被当成功吞掉、整链误报「完成」（实测复现）。
+        if step.get("status") == "failed":
+            retries = dict(state.get("retry_counts") or {})
+            used = int(retries.get(step_id, 0))
+            if used < deps.max_step_retries:
+                retries[step_id] = used + 1
+                plan = engine.mark(plan, step_id, "pending")
+                step = {**step, "status": "pending"}
+                trace.append({"event": "step.retry", "tool": tool, "attempt": used + 1,
+                              "reason": "tool_error", "at": now_iso()})
+                return {**base, "plan": plan, "current_step": step, "retry_counts": retries}
+            plan = engine.mark(plan, step_id, "failed")
+            step = {**step, "finished_at": now_iso()}
+            return {**base, "plan": plan, "current_step": step, "status": "failed"}
+
         # 通过（含 BLOCKED_INPUT 步骤：保持 blocked 状态等待 data Gate 决策后的重试路径）
         status = step.get("status") or "completed"
         if status != "blocked":
@@ -232,10 +304,10 @@ def finalize_node(deps: GraphDeps) -> Callable:
         failed = stats.get("failed", 0) + stats.get("skipped", 0)
         if state.get("status") == "failed":
             status = "failed"
-        elif stats.get("pending", 0) and not stats.get("completed", 0):
-            status = "blocked"
         elif failed:
             status = "failed"
+        elif stats.get("pending", 0) or stats.get("blocked", 0) or stats.get("running", 0):
+            status = "blocked"
         else:
             status = "completed"
         completed = stats.get("completed", 0)

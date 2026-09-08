@@ -134,7 +134,7 @@ def assemble_bundle(*, orders: list[dict[str, Any]], routes: list[dict[str, Any]
     bundle["order_snapshots"] = [
         finalize({**snapshot_header(
             kind="order_snapshots",
-            snapshot_id=str(item.get("snapshot_id") or f"SNAP-ORD-{item.get('order_id', '')}"),
+            snapshot_id=str(item.get("snapshot_id") or f"SNAP-ORD-{item.get('order_id', '')}-{item.get('order_line_id') or 'L1'}"),
             source_system=source_system,
             source_ref=str(item.get("source_ref") or ""),
             source_observed_at=str(item.get("source_observed_at") or ""),
