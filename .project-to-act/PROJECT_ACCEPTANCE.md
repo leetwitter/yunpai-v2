@@ -14,7 +14,7 @@
 | 标准 ID | 标准 | 状态 | 验证方法摘要 | 证据 ID |
 |---|---|---|---|---|
 | A-001 | 方案书阶段：书一/书二/书三经用户逐卡/逐章审核通过并 commit 入库 | 通过 | 用户会话确认 + git 提交记录 | E-001 |
-| A-002 | 骨架阶段：LangGraph 唯一执行路径可用，API 契约兼容冒烟通过 | 待检查 | 契约快照测试 + 冒烟运行 | 无 |
+| A-002 | 骨架阶段：LangGraph 唯一执行路径可用，API 契约兼容冒烟通过 | 基本通过 | pytest 全绿+API 冒烟（E-002）；逐字段流式契约快照留 M5 录制比对 | E-002 |
 | A-003 | 注册阶段：119 工具+8 技能台账登记完整，五项 checklist 全过 | 待检查 | 注册审查台账 + 契约测试 | 无 |
 | A-004 | 联调阶段：W913 workflow 路径 m5.released 且 free 路径全链跑通 | 待检查 | W913 复测证据（沿用旧测试方法 run_w913_free.py 口径） | 无 |
 | A-005 | 自进化阶段：四接缝（观察/注入消费/使用反馈/红线周期）测试全绿 | 待检查 | pytest 分项 + 演示证据 | 无 |
@@ -24,6 +24,7 @@
 | 证据 ID | 时间 | 方法摘要 | 退出状态 | 版本或文件哈希 | 结果摘要 | 证据位置 | 有效期 |
 |---|---|---|---|---|---|---|---|
 | E-001 | 2026-09-09 | 用户会话确认三本方案书并批准按文档完整开发（/goal） | 通过 | commit 841447a（三书齐） | 三本书冻结 v1.0，成为代码阶段唯一设计依据 | 本仓库 git 历史 | 长期 |
+| E-002 | 2026-09-09 | pytest -q → 376 passed/4 skipped；API 冒烟：POST /runs=200(chat completed)、GET /runs/{id}=completed、resume 无 Gate=409、NDJSON 流式 run_start→assistant_delta→state_snapshot→run_done、/tools /skills /health=200 | 通过 | 分支 feat/orchestrator-skeleton-20260909 | V2-M1/M2 代码验收；流式逐字段契约快照与 W913 全链留 M5 | 本仓库 git 历史 | 长期 |
 
 ## Gate 记录
 

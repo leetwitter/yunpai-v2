@@ -32,4 +32,4 @@
 
 ## 状态
 
-- 2026-09-09：**仓库迁移至 `F:\Zcode\Yunpai-v2` 独立运作（彻底脱离原工作区）**；三本方案书经用户确认冻结 v1.0；进入 V2-M1/M2 开发（分支 feat/orchestrator-skeleton-20260909）。
+- 2026-09-09：**仓库迁移至 `F:\Zcode\Yunpai-v2` 独立运作（彻底脱离原工作区）**；三本方案书经用户确认冻结 v1.0；V2-M1/M2 完成（feat/orchestrator-skeleton-20260909：pytest 376 绿 + API 冒烟；实现偏差见 .project-to-act/docs/05）；下一步 V2-M3 工具注册批次。
