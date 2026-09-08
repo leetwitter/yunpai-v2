@@ -102,20 +102,30 @@ class QwenRouter:
             "你是云湃制造系统的 Planner 路由器。只负责识别用户意图和选择执行路径，不执行工具。"
             "必须只输出一个 JSON 对象，不要 Markdown 或思维过程。route 必须是字面值 workflow、free、chat，绝对不能使用 production_planning、erp 或其他自定义路由名。"
             "workflow 仅用于完整 M0 到 M5 订单/采购/排程主链；free 用于一个或多个已注册工具或已注册高阶 Skill；chat 用于解释性对话。"
-            "JSON 字段必须为 intent、route、tools、confidence、reason；route=chat 时必须额外返回 answer，用中文直接回答用户问题。可选 skills 字段用于选择高阶 Skill，只能从给定 skill catalog 中按 name 精确选择。"
+            "JSON 字段必须为 intent、route、workflow_id、tools、confidence、reason；"
+            "route=workflow 时 workflow_id 必须从给定 workflows 中按 id 精确选择，不能为空也不能自造；"
+            "route=chat 时必须额外返回 answer，用中文直接回答用户问题。可选 skills 字段用于选择高阶 Skill，只能从给定 skill catalog 中按 name 精确选择。"
             "tools 只能从给定 catalog 选择。skill 名称必须与 catalog 中的 name 完全一致，不能自造或拼接版本号。"
-            "上传订单文件时优先 workflow 或 ingest_document；上传基础资料/业务资料（BOM、SOP、设备、工位、人员、库存、供应商、财务、目录批量）时必须在 skills 中给出 business-data-identification。"
+            "上传原始业务文件（订单/BOM/SOP/工程图等）时首选 workflow=m1_m5_document_to_plan；"
+            "上传基础资料/业务资料（BOM、SOP、设备、工位、人员、库存、供应商、财务、目录批量）时必须在 skills 中给出 business-data-identification。"
         )
 
     @staticmethod
     def _prompt(request: dict[str, Any], catalog: list[dict[str, Any]], skill_catalog: list[dict[str, Any]] | None = None) -> str:
+        from .workflow_registry import KNOWN_WORKFLOWS, load_workflow
+
         message = str(request.get("message") or request.get("task") or "")
         file_items = list(request.get("documents", [])) + list(request.get("attachments", []))
         file_names = [str(item.get("filename", "")) for item in file_items if isinstance(item, dict)]
         skill_names = [str(skill) for skill in (request.get("skills") or [])] if isinstance(request.get("skills"), list) else []
+        workflows = [
+            {"id": wid, "description": str(load_workflow(wid).get("description") or "")[:120]}
+            for wid in KNOWN_WORKFLOWS
+        ]
         return json.dumps({
             "message": message,
             "uploaded_files": file_names,
+            "workflows": workflows,
             "catalog": catalog,
             "skills": skill_catalog or [{"name": "business-data-identification", "description": "识别业务资料并写入可审核候选库；不直接发布 M0 canonical 事实"}],
             "requested_skills": skill_names,
@@ -153,6 +163,8 @@ class QwenRouter:
         tools = value.get("tools", [])
         if not isinstance(tools, list) or not all(isinstance(tool, str) for tool in tools):
             raise ValueError("Qwen tools must be a string array")
+        workflow_id = value.get("workflow_id")
+        workflow_id = workflow_id.strip() if isinstance(workflow_id, str) else ""
         try:
             confidence = max(0.0, min(1.0, float(value.get("confidence", 0))))
         except (TypeError, ValueError):
@@ -160,6 +172,7 @@ class QwenRouter:
         return {
             "intent": str(value.get("intent") or "unknown"),
             "route": route,
+            "workflow_id": workflow_id or None,
             "tools": tools,
             "skills": [str(skill) for skill in value.get("skills", [])] if isinstance(value.get("skills", []), list) else [],
             "confidence": confidence,
