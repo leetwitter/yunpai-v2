@@ -25,6 +25,7 @@
 |---|---|---|---|---|---|---|---|
 | E-001 | 2026-09-09 | 用户会话确认三本方案书并批准按文档完整开发（/goal） | 通过 | commit 841447a（三书齐） | 三本书冻结 v1.0，成为代码阶段唯一设计依据 | 本仓库 git 历史 | 长期 |
 | E-002 | 2026-09-09 | pytest -q → 376 passed/4 skipped；API 冒烟：POST /runs=200(chat completed)、GET /runs/{id}=completed、resume 无 Gate=409、NDJSON 流式 run_start→assistant_delta→state_snapshot→run_done、/tools /skills /health=200 | 通过 | 分支 feat/orchestrator-skeleton-20260909 | V2-M1/M2 代码验收；流式逐字段契约快照与 W913 全链留 M5 | 本仓库 git 历史 | 长期 |
+| E-003 | 2026-09-09 | V2-M3 开工门基线复验：.venv(Py3.12.10) pytest -q → 376 passed/4 skipped(120.7s) 对齐 E-002；注册目录对账 119 specs=115 manifest+4 local、四态 30/53/1/35、CatalogView=84 无 UNBOUND/DEPRECATED 泄漏、production 降级 OK、8 技能一致；路由专项单测 18/18；活体冒烟 9 用例×2 配置（确定性回退 + DeepSeek 真实 LLM 注入 QwenRouter 同码路径，8027 临时实例）8/9：chat/free/显式一票否决/确定性回退 1-2/Gate 挂起/NDJSON 流全通，LLM 提案层经真实模型走通（DeepSeek 1-3s、本地 Qwen qwen3.8-27b 49-76s），_validate 护栏对不可见工具/未知技能有效 | 通过（开工门开启；4 项发现转 R1 处理清单） | 分支 feat/orchestrator-skeleton-20260909（账本行未提交，随 R1 首 PR 入库） | 发现：① /tools 端点暴露全量 119 含 5 个红线名且 run_mrp_procurement_plan 标 bound=true 与绑定表 UNBOUND 矛盾；② 显式非法参数（未知 workflow/不可见工具）返回 HTTP 500 而非 4xx 结构化错误；③ LLM workflow 提案闭环缺失——system prompt 未注入 KNOWN_WORKFLOWS/未要求 workflow_id，_validate 对 route=workflow 必拒，实际仅靠附件确定性规则兜底；④ 本地 Qwen 实测延迟 49-76s 超默认 QWEN_TIMEOUT_S=45s，且 classify 空 key 即 not_configured（本地模型需占位 key，guide_chat 有占位而 classify 无）。另：默认 python=3.10 与 .venv 并存，误用致 6 failed（缺 pypdf+langgraph 版本差异），基线解释器=.venv | 会话记录+本表（临时脚本在 %TEMP%\yunpai-verify） | 至 R1 收口 |
 
 ## Gate 记录
 
