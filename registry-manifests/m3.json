@@ -1,0 +1,1650 @@
+{
+  "module": "m3",
+  "base_url": "http://m3:8000",
+  "tools": [
+    {
+      "name": "run_m3_procurement_requirements",
+      "description": "正式 M3 工具。接收订单和完整 BOM/子 BOM，由 M3 自行查询库存、在途采购与历史用量，经过可审计物料匹配后计算交给 M4 的采购需求。",
+      "http": {
+        "method": "POST",
+        "path": "/api/v1/m3/procurement-requirements:run-json",
+        "timeout_s": 120
+      },
+      "input_schema": {
+        "type": "object",
+        "anyOf": [
+          {
+            "required": [
+              "order",
+              "bom"
+            ]
+          },
+          {
+            "required": [
+              "m2_package"
+            ]
+          },
+          {
+            "required": [
+              "m2_package_dir"
+            ]
+          }
+        ],
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "description": "租户 ID；正式 Orchestrator 流程必须传入。"
+          },
+          "order": {
+            "type": "object",
+            "required": [
+              "project_id",
+              "order_id",
+              "bom_id",
+              "product_name",
+              "order_qty",
+              "due_date"
+            ],
+            "properties": {
+              "project_id": {
+                "type": "string"
+              },
+              "order_id": {
+                "type": "string"
+              },
+              "bom_id": {
+                "type": "string"
+              },
+              "procurement_plan_id": {
+                "type": "string"
+              },
+              "product_name": {
+                "type": "string"
+              },
+              "order_qty": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "due_date": {
+                "type": "string",
+                "format": "date"
+              }
+            }
+          },
+          "bom": {
+            "type": "object",
+            "required": [
+              "bom_id",
+              "product_name",
+              "lines"
+            ],
+            "properties": {
+              "bom_id": {
+                "type": "string"
+              },
+              "product_name": {
+                "type": "string"
+              },
+              "lines": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "material_code",
+                    "material_name",
+                    "qty_per",
+                    "uom"
+                  ],
+                  "properties": {
+                    "line_id": {
+                      "type": "string"
+                    },
+                    "material_code": {
+                      "type": "string"
+                    },
+                    "material_name": {
+                      "type": "string"
+                    },
+                    "qty_raw": {
+                      "type": "number"
+                    },
+                    "qty_per": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "uom": {
+                      "type": "string"
+                    },
+                    "loss_rate": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "requires_procurement": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "component_bom": {
+            "type": [
+              "array",
+              "object"
+            ],
+            "description": "已展开或可递归展开的子 BOM 关系。",
+            "items": {
+              "type": "object",
+              "required": [
+                "parent_material_code",
+                "child_material_code",
+                "qty_per_parent",
+                "uom"
+              ],
+              "properties": {
+                "parent_material_code": {
+                  "type": "string"
+                },
+                "child_material_code": {
+                  "type": "string"
+                },
+                "child_material_name": {
+                  "type": "string"
+                },
+                "qty_per_parent": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "uom": {
+                  "type": "string"
+                },
+                "uom_factor": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "loss_rate": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "requires_procurement": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "inventory_snapshot": {
+            "type": "array",
+            "description": "旧调用兼容字段；正式计算忽略该字段并查询 M3 Provider。",
+            "items": {
+              "type": "object",
+              "required": [
+                "material_code",
+                "warehouse",
+                "lot_no",
+                "available_qty",
+                "locked_qty",
+                "qc_status",
+                "received_at"
+              ],
+              "properties": {
+                "material_code": {
+                  "type": "string"
+                },
+                "material_name": {
+                  "type": "string"
+                },
+                "warehouse": {
+                  "type": "string"
+                },
+                "lot_no": {
+                  "type": "string"
+                },
+                "available_qty": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "locked_qty": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "qc_status": {
+                  "type": "string"
+                },
+                "received_at": {
+                  "type": "string"
+                },
+                "base_stock_reserved": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "open_purchase_orders": {
+            "type": "array",
+            "description": "旧调用兼容字段；正式计算忽略该字段并查询 M3 Provider。",
+            "items": {
+              "type": "object",
+              "required": [
+                "material_code",
+                "open_po_qty"
+              ],
+              "properties": {
+                "material_code": {
+                  "type": "string"
+                },
+                "open_po_qty": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "promise_date": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "supplier_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "historical_usage": {
+            "type": "array",
+            "description": "旧调用兼容字段；正式计算忽略该字段并查询 M3 Provider。",
+            "items": {
+              "type": "object",
+              "required": [
+                "material_code"
+              ],
+              "properties": {
+                "material_code": {
+                  "type": "string"
+                },
+                "days": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                "total_usage_qty": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "safety_stock_ratio": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            }
+          },
+          "m2_package": {
+            "type": "object",
+            "description": "兼容当前 M2 输出的数据包。"
+          },
+          "m2_package_dir": {
+            "type": "string",
+            "description": "兼容已有本地 M2 产物目录。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "errors",
+          "trace_id"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "procurement_plan_id",
+              "project_id",
+              "order_id",
+              "bom_id",
+              "product_name",
+              "order_qty",
+              "due_date",
+              "status",
+              "availability_status",
+              "lines",
+              "shortage_lines",
+              "warnings",
+              "material_matching",
+              "quality_issues",
+              "supply_source"
+            ],
+            "properties": {
+              "procurement_plan_id": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "order_id": {
+                "type": "string"
+              },
+              "bom_id": {
+                "type": "string"
+              },
+              "product_name": {
+                "type": "string"
+              },
+              "order_qty": {
+                "type": "number"
+              },
+              "due_date": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ready_for_m4",
+                  "requires_material_review"
+                ]
+              },
+              "availability_status": {
+                "type": "string",
+                "enum": [
+                  "ready",
+                  "partial_shortage",
+                  "no_procurement_materials"
+                ]
+              },
+              "lines": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "line_id",
+                    "material_code",
+                    "material_name",
+                    "uom",
+                    "gross_required_qty",
+                    "book_qty",
+                    "available_qty",
+                    "open_po_qty",
+                    "shortage_qty",
+                    "suggest_purchase_qty",
+                    "readiness",
+                    "recommendation"
+                  ]
+                }
+              },
+              "shortage_lines": {
+                "type": "array"
+              },
+              "warnings": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "material_matching": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              "quality_issues": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              "supply_source": {
+                "type": "object",
+                "required": [
+                  "owner",
+                  "provider",
+                  "upstream_supply_ignored"
+                ]
+              }
+            }
+          },
+          "errors": {
+            "type": "array"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "run_mrp_procurement_plan",
+      "description": "[LEGACY] 根据订单、BOM、库存、在途采购和采购参数计算旧版聚合采购计划、审批任务和下游草稿。仅供已有调用兼容；新流程必须使用 run_m3_procurement_requirements。",
+      "http": {
+        "method": "POST",
+        "path": "/api/v1/m3/procurement-plan:run-json",
+        "timeout_s": 120
+      },
+      "input_schema": {
+        "type": "object",
+        "anyOf": [
+          {
+            "required": [
+              "order",
+              "bom"
+            ]
+          },
+          {
+            "required": [
+              "m2_package"
+            ]
+          },
+          {
+            "required": [
+              "m2_package_dir"
+            ]
+          }
+        ],
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "description": "租户 ID；正式 Orchestrator 流程必须传入。"
+          },
+          "source_module": {
+            "type": "string",
+            "description": "上游模块，例如 M1 或 M2。"
+          },
+          "source_package_id": {
+            "type": "string",
+            "description": "上游数据包、任务或产物包 ID。"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "order": {
+            "type": "object",
+            "required": [
+              "project_id",
+              "order_id",
+              "bom_id",
+              "product_name",
+              "order_qty",
+              "due_date"
+            ],
+            "properties": {
+              "project_id": {
+                "type": "string"
+              },
+              "order_id": {
+                "type": "string"
+              },
+              "bom_id": {
+                "type": "string"
+              },
+              "procurement_plan_id": {
+                "type": "string"
+              },
+              "customer_name": {
+                "type": "string"
+              },
+              "product_name": {
+                "type": "string"
+              },
+              "order_qty": {
+                "type": "number"
+              },
+              "due_date": {
+                "type": "string",
+                "format": "date"
+              }
+            }
+          },
+          "bom": {
+            "type": "object",
+            "required": [
+              "bom_id",
+              "product_name",
+              "lines"
+            ],
+            "properties": {
+              "bom_id": {
+                "type": "string"
+              },
+              "bom_version": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "description": "BOM 放行状态，例如 draft_pending_engineering_review、needs_customer_confirmation、approved_for_mrp。"
+              },
+              "product_name": {
+                "type": "string"
+              },
+              "lines": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "material_code",
+                    "material_name",
+                    "qty_per",
+                    "uom"
+                  ],
+                  "properties": {
+                    "line_id": {
+                      "type": "string"
+                    },
+                    "material_code": {
+                      "type": "string"
+                    },
+                    "material_name": {
+                      "type": "string"
+                    },
+                    "qty_raw": {
+                      "type": "number"
+                    },
+                    "qty_per": {
+                      "type": "number"
+                    },
+                    "uom": {
+                      "type": "string"
+                    },
+                    "loss_rate": {
+                      "type": "number"
+                    },
+                    "requires_procurement": {
+                      "type": "boolean"
+                    },
+                    "evidence_refs": {
+                      "type": "array"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "approval_context": {
+            "type": "object",
+            "description": "上游业务、工程、财务、法务审核状态。不确定或 blocked 会进入 M3 质量报告和人工审核。"
+          },
+          "m2_package": {
+            "type": "object",
+            "required": [
+              "bom_lines"
+            ],
+            "properties": {
+              "bom_header": {
+                "type": [
+                  "object",
+                  "array"
+                ]
+              },
+              "bom_lines": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object"
+                }
+              },
+              "assumptions": {
+                "type": [
+                  "object",
+                  "array"
+                ]
+              },
+              "project_file": {
+                "type": "object"
+              },
+              "artifact_refs": {
+                "type": [
+                  "object",
+                  "array"
+                ]
+              }
+            },
+            "description": "M2 兼容包，包含 bom_header、bom_lines、assumptions、project_file。M3 会先转换为标准 order + bom。"
+          },
+          "m2_package_dir": {
+            "type": "string",
+            "description": "兼容已有本地 M2 产物目录调用；跨服务调用优先使用 m2_package。"
+          },
+          "inventory_snapshot": {
+            "type": "array"
+          },
+          "procurement_params": {
+            "type": "array"
+          },
+          "open_purchase_orders": {
+            "type": "array"
+          },
+          "historical_usage": {
+            "type": "array"
+          },
+          "component_bom": {
+            "type": [
+              "array",
+              "object"
+            ]
+          },
+          "procurement_adjustments": {
+            "type": "array"
+          },
+          "substitute_materials": {
+            "type": "array"
+          },
+          "inventory_transactions": {
+            "type": "array"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "errors",
+          "trace_id",
+          "order_id",
+          "cache",
+          "supplier_message_drafts",
+          "quality_report",
+          "approval_tasks",
+          "behavior_controls",
+          "execution_log",
+          "pr_po_drafts",
+          "inventory_reservation_drafts",
+          "data_completion_tasks",
+          "material_readiness_handoff",
+          "inventory_transaction_ledger",
+          "inventory_audit_clues",
+          "substitute_material_suggestions"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object",
+            "description": "采购计划主体，包含 procurement_plan_id、availability_status、lines、shortage_lines。"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "cache": {
+            "type": "object"
+          },
+          "quality_report": {
+            "type": "object"
+          },
+          "approval_tasks": {
+            "type": "array"
+          },
+          "behavior_controls": {
+            "type": "object"
+          },
+          "execution_log": {
+            "type": "array"
+          },
+          "pr_po_drafts": {
+            "type": "object"
+          },
+          "inventory_reservation_drafts": {
+            "type": "object"
+          },
+          "data_completion_tasks": {
+            "type": "array"
+          },
+          "material_readiness_handoff": {
+            "type": "object"
+          },
+          "supplier_message_drafts": {
+            "type": "array"
+          },
+          "inventory_transaction_ledger": {
+            "type": "object"
+          },
+          "inventory_audit_clues": {
+            "type": "object"
+          },
+          "substitute_material_suggestions": {
+            "type": "object"
+          },
+          "upstream_context": {
+            "type": "object"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "list_m3_orders",
+      "description": "[LEGACY] 查询旧 M3 数据提供器中的订单列表，仅供已有调用兼容。",
+      "http": {
+        "method": "GET",
+        "path": "/api/v1/m3/orders"
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "array"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_m3_order",
+      "description": "[LEGACY] 查询旧 M3 数据提供器中的单个订单，仅供已有调用兼容。",
+      "http": {
+        "method": "GET",
+        "path": "/api/v1/m3/orders/{order_id}"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "order_id"
+        ],
+        "properties": {
+          "order_id": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_m3_procurement_plan",
+      "description": "[LEGACY] 查询并运行旧版聚合采购计划，仅供已有调用兼容。",
+      "http": {
+        "method": "GET",
+        "path": "/api/v1/m3/procurement-plan"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "order_id"
+        ],
+        "properties": {
+          "order_id": {
+            "type": "string",
+            "description": "要查计划的目标订单 ID。"
+          },
+          "expand_bom": {
+            "type": "boolean",
+            "default": false,
+            "description": "是否展开多层级 BOM 明细行。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_persisted_m3_plan",
+      "description": "[LEGACY] 读取旧版持久化采购计划全量 bundle，仅供已有调用兼容。",
+      "http": {
+        "method": "GET",
+        "path": "/api/v1/m3/persisted/procurement-plans/{plan_id}"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "plan_id"
+        ],
+        "properties": {
+          "plan_id": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_material_readiness_snapshot",
+      "description": "正式 M5 物料齐套快照：按订单生成/查询逐料齐备快照（material readiness snapshot），返回订单级齐套状态（ready/partial/shortage/quality_hold/unknown）、最早可齐套时间、逐料 required/allocated/shortage 数量与 trusted ready time、每个库存 lot 或采购行的 allocation 明细（source/quantity/available_at/confidence/checksum）及固定输入版本。回答“某订单物料齐不齐、缺什么料、什么时候能齐”时使用本工具。订单号示例：ORD-DEMO-M3-0001。",
+      "http": {
+        "method": "GET",
+        "path": "/api/v1/m3/material-readiness-snapshot"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "order_id",
+          "tenant_id"
+        ],
+        "properties": {
+          "order_id": {
+            "type": "string",
+            "description": "目标订单 ID，例如 ORD-DEMO-M3-0001。"
+          },
+          "tenant_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "必填租户 ID；仅查询该租户的持久化计划。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "errors",
+          "trace_id"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "schema_version",
+              "snapshot_id",
+              "snapshot_version",
+              "calculation_version",
+              "input_versions",
+              "calculated_at",
+              "observed_at",
+              "orders",
+              "completeness",
+              "input_checksum"
+            ],
+            "properties": {
+              "schema_version": {
+                "type": "string",
+                "description": "快照 schema 版本，例如 m5.material-readiness-snapshot.v1。"
+              },
+              "snapshot_id": {
+                "type": "string"
+              },
+              "snapshot_version": {
+                "type": "string"
+              },
+              "calculation_version": {
+                "type": "string"
+              },
+              "input_versions": {
+                "type": "object",
+                "properties": {
+                  "engineering_release_id": {
+                    "type": "string"
+                  },
+                  "bom_version": {
+                    "type": "string"
+                  },
+                  "wms_inventory_snapshot_id": {
+                    "type": "string"
+                  },
+                  "wms_inventory_snapshot_version": {
+                    "type": "string"
+                  },
+                  "m4_supply_snapshot_id": {
+                    "type": "string"
+                  },
+                  "m4_supply_snapshot_version": {
+                    "type": "string"
+                  },
+                  "substitution_policy_version": {
+                    "type": "string"
+                  }
+                }
+              },
+              "calculated_at": {
+                "type": "string"
+              },
+              "observed_at": {
+                "type": "string"
+              },
+              "orders": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "order_id",
+                    "status",
+                    "earliest_kitting_time",
+                    "materials"
+                  ],
+                  "properties": {
+                    "order_id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ready",
+                        "partial",
+                        "shortage",
+                        "quality_hold",
+                        "unknown"
+                      ]
+                    },
+                    "earliest_kitting_time": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "materials": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "material_code": {
+                            "type": "string"
+                          },
+                          "material_name": {
+                            "type": "string"
+                          },
+                          "uom": {
+                            "type": "string"
+                          },
+                          "required_quantity": {
+                            "type": "string"
+                          },
+                          "allocated_quantity": {
+                            "type": "string"
+                          },
+                          "shortage_quantity": {
+                            "type": "string"
+                          },
+                          "trusted_ready_at": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "status": {
+                            "type": "string"
+                          },
+                          "allocations": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "source_type": {
+                                  "type": "string",
+                                  "enum": [
+                                    "wms_inventory_lot",
+                                    "m4_purchase_order"
+                                  ]
+                                },
+                                "source_id": {
+                                  "type": "string"
+                                },
+                                "source_version": {
+                                  "type": "string"
+                                },
+                                "quantity": {
+                                  "type": "string"
+                                },
+                                "available_at": {
+                                  "type": "string"
+                                },
+                                "confidence": {
+                                  "type": "number"
+                                },
+                                "observed_at": {
+                                  "type": "string"
+                                },
+                                "checksum": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "completeness": {
+                "type": "object",
+                "properties": {
+                  "bom": {
+                    "type": "boolean"
+                  },
+                  "inventory": {
+                    "type": "boolean"
+                  },
+                  "in_transit": {
+                    "type": "boolean"
+                  },
+                  "substitution": {
+                    "type": "boolean"
+                  },
+                  "uom": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "input_checksum": {
+                "type": "string"
+              },
+              "recoverable": {
+                "type": "boolean"
+              },
+              "review_required": {
+                "type": "boolean"
+              },
+              "reason_code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "recovery_hint": {
+                "type": "string"
+              }
+            }
+          },
+          "errors": {
+            "type": "array"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_material_readiness",
+      "description": "[LEGACY] 查询旧版物料齐套和 PMC 交接结果；该职责不再属于正式 M3，请改用 get_material_readiness_snapshot。",
+      "http": {
+        "method": "GET",
+        "path": "/api/v1/m3/material-readiness"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "order_id"
+        ],
+        "properties": {
+          "order_id": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_pr_po_drafts",
+      "description": "[LEGACY] 查询旧版 PR/PO 草稿；采购执行职责应迁移到 M4。",
+      "http": {
+        "method": "GET",
+        "path": "/api/v1/m3/pr-po-drafts"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "order_id"
+        ],
+        "properties": {
+          "order_id": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_m3_approval_tasks",
+      "description": "[LEGACY] 查询旧版 M3 审批任务；正式 M3 不再产生审批任务。",
+      "http": {
+        "method": "GET",
+        "path": "/api/v1/m3/approval-tasks"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "order_id"
+        ],
+        "properties": {
+          "order_id": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "array"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "approve_m3_task",
+      "description": "[LEGACY] 审批旧版 M3 任务，仅供已有流程兼容。",
+      "http": {
+        "method": "POST",
+        "path": "/api/v1/m3/approval-tasks/{approval_id}:approve"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "approval_id",
+          "order_id",
+          "actor_user",
+          "actor_role"
+        ],
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "actor_user": {
+            "type": "string"
+          },
+          "actor_role": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "reject_m3_task",
+      "description": "[LEGACY] 驳回旧版 M3 任务，仅供已有流程兼容。",
+      "http": {
+        "method": "POST",
+        "path": "/api/v1/m3/approval-tasks/{approval_id}:reject"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "approval_id",
+          "order_id",
+          "actor_user",
+          "actor_role"
+        ],
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "actor_user": {
+            "type": "string"
+          },
+          "actor_role": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "request_change_m3_task",
+      "description": "[LEGACY] 请求修改旧版 M3 任务，仅供已有流程兼容。",
+      "http": {
+        "method": "POST",
+        "path": "/api/v1/m3/approval-tasks/{approval_id}:request-change"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "approval_id",
+          "order_id",
+          "actor_user",
+          "actor_role"
+        ],
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "actor_user": {
+            "type": "string"
+          },
+          "actor_role": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "approve_to_send_m3_task",
+      "description": "[LEGACY] 批准并发送旧版供应商消息；该职责应迁移到 M4。",
+      "http": {
+        "method": "POST",
+        "path": "/api/v1/m3/approval-tasks/{approval_id}:approve_to_send"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "approval_id",
+          "order_id",
+          "actor_user",
+          "actor_role"
+        ],
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "actor_user": {
+            "type": "string"
+          },
+          "actor_role": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_m3_m4_handoffs",
+      "description": "[LEGACY] 查询旧版 M3 到 M4 handoff 记录，仅供已有流程兼容。",
+      "http": {
+        "method": "GET",
+        "path": "/api/v1/m3/procurement-plan/{plan_id}/m4-handoffs"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "plan_id"
+        ],
+        "properties": {
+          "plan_id": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "array"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "export_m3_procurement_suggestions",
+      "description": "[LEGACY] 导出旧版采购建议供 Orchestrator 转发 M4，仅供已有流程兼容。",
+      "http": {
+        "method": "GET",
+        "path": "/api/v1/m3/procurement-plan/{plan_id}/export-suggestions"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "plan_id",
+          "tenant_id",
+          "version_id",
+          "source_plan_checksum"
+        ],
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "description": "采购计划 ID。"
+          },
+          "tenant_id": {
+            "type": "string",
+            "description": "由已认证 Orchestrator 传入的租户 ID。"
+          },
+          "version_id": {
+            "type": "string",
+            "description": "当前 M3 运行返回的不可变采购计划版本 ID。"
+          },
+          "source_plan_checksum": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "当前 M3 运行返回的原始计划内容 SHA-256。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "plan_id": {
+            "type": "string"
+          },
+          "procurement_plan_id": {
+            "type": "string"
+          },
+          "procurement_plan_version_id": {
+            "type": "string"
+          },
+          "version_id": {
+            "type": "string"
+          },
+          "source_plan_checksum": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "不可变采购计划快照的创建时间；同一 version_id 重复导出保持不变。"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "tracking_task_id": {
+            "type": "string",
+            "description": "从 X-Yunpai-Task-ID 原样校验并返回的业务追踪 ID。"
+          },
+          "suggestions": {
+            "type": "array",
+            "description": "采购建议行数组,每条含 item_code/item_name/quantity/unit/supplier_name/required_date/project_code。"
+          },
+          "count": {
+            "type": "integer"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "receive_m3_material_demand",
+      "description": "接收 M5 排程发布后的 material-demand 反馈（经 orchestrator bridge 转交 M3）。幂等受理并持久化（同 task_id+event_id 重放返回同一 feedback_ref）；应用（并入计划缺口）由后续阶段人工/规则确认，本工具只受理记录。",
+      "http": {
+        "method": "POST",
+        "path": "/api/v1/m3/material-demand/receive"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "feedback_type",
+          "event_id",
+          "task_id",
+          "plan_version"
+        ],
+        "properties": {
+          "feedback_type": {
+            "type": "string",
+            "const": "material_demand"
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "event_kind": {
+            "type": "string"
+          },
+          "event_version": {
+            "type": "integer"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "base_plan_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_version": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "lifecycle_status": {
+            "type": "string"
+          },
+          "source_input_hash": {
+            "type": "string"
+          },
+          "affected_lines": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "occurred_at": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "checksum": {
+            "type": "string"
+          },
+          "feedback_ref": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "errors",
+          "trace_id"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "accepted",
+              "applied",
+              "feedback_ref",
+              "status",
+              "replayed"
+            ],
+            "properties": {
+              "accepted": {
+                "type": "boolean"
+              },
+              "applied": {
+                "type": "boolean"
+              },
+              "feedback_ref": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "const": "pending_review"
+              },
+              "replayed": {
+                "type": "boolean"
+              }
+            }
+          },
+          "errors": {
+            "type": "array"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    }
+  ]
+}

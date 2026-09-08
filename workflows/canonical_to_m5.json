@@ -1,0 +1,78 @@
+{
+  "workflow_id": "canonical_to_m5",
+  "version": "1.0.0",
+  "description": "已有 canonical 数据恢复入口：校验 canonical entity/version/checksum 后，从 M2 已审批 BOM/SOP/route 与 M3/M4/M5 所需事实恢复执行，不重复导入原始文件；draft 计划经人工 Apply Gate 后在 M5 数据库真实执行并更新 scenario head。",
+  "task_id_policy": "同一次运行的根 task_id 原样传播到所有步骤；canonical 回读以 tenant/site 与 entity/version/checksum 为准。",
+  "steps": [
+    {
+      "id": "canonical_verify",
+      "module": "m0",
+      "tool": "data_import_status",
+      "depends_on": [],
+      "gate": null,
+      "input_from": ["request.canonical_refs"],
+      "produces": ["canonical_entity", "canonical_version", "canonical_checksum"]
+    },
+    {
+      "id": "m2_engineering",
+      "module": "m2",
+      "tool": "run_bom_sop_workflow",
+      "depends_on": ["canonical_verify"],
+      "gate": "engineering_approval",
+      "input_from": ["canonical_verify.canonical_entity", "request.canonical_route"],
+      "produces": ["bom_draft", "sop_draft"]
+    },
+    {
+      "id": "m3_mrp",
+      "module": "m3",
+      "tool": "run_m3_procurement_requirements",
+      "depends_on": ["m2_engineering"],
+      "gate": "blocked_input_or_material_match",
+      "input_from": ["m2_engineering.approved_bom", "m3.inventory_fact_readback"],
+      "produces": ["requirements", "shortage_lines", "handoff_envelope"]
+    },
+    {
+      "id": "m4_procurement",
+      "module": "m4",
+      "tool": "import_m4_purchase_suggestions_json",
+      "depends_on": ["m3_mrp"],
+      "gate": "missing_supplier_or_eta",
+      "input_from": ["m3_mrp.handoff_envelope", "m4.supplier_fact_readback"],
+      "produces": ["purchase_batch", "supply_snapshot_refs"]
+    },
+    {
+      "id": "m5_snapshot",
+      "module": "m5",
+      "tool": "ingest_m5_planning_snapshot",
+      "depends_on": ["m4_procurement"],
+      "gate": null,
+      "input_from": ["canonical_verify.canonical_entity", "m2_engineering.approved_bom", "m3_mrp.readiness", "m4_procurement.supply_snapshot", "m5.resource_and_calendar_facts"],
+      "produces": ["six_class_snapshots", "snapshot_revisions", "snapshot_checksums"]
+    },
+    {
+      "id": "m5_solve",
+      "module": "m5",
+      "tool": "solve_scheduling",
+      "depends_on": ["m5_snapshot"],
+      "gate": "schedule_apply",
+      "input_from": ["m5_snapshot.six_class_snapshots", "m5_snapshot.snapshot_checksums"],
+      "produces": ["draft_plan_version", "validation_report", "input_hash"]
+    },
+    {
+      "id": "m5_readback",
+      "module": "m5",
+      "tool": "get_m5_schedule",
+      "depends_on": ["m5_solve"],
+      "gate": null,
+      "input_from": ["m5_solve.draft_plan_version"],
+      "produces": ["plan_readback", "lifecycle_events", "head_revision"]
+    }
+  ],
+  "invariants": [
+    "必须校验 canonical entity/version/checksum 后才恢复，缺校验证据不得从 request 重建生产事实",
+    "本工作流不导入原始文件；所有输入来自 canonical 服务回读或 M2-M5 已批准快照",
+    "M2 只消费已批准 BOM/SOP/route；M3/M4 只消费批准事实与供应/库存快照，缺失权威输入返回 BLOCKED_INPUT",
+    "M5 六类 snapshot 必须带 snapshot_id/正整数 revision/checksum/来源观测时间，由确定性代码组装",
+    "M5 draft 只有验证通过并经理性人工 Apply Gate 后才能 approved/released，release 与 head CAS 同事务"
+  ]
+}

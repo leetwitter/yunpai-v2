@@ -1,0 +1,1253 @@
+{
+  "module": "m1",
+  "base_url": "http://m1:8080",
+  "tools": [
+    {
+      "name": "ingest_document",
+      "description": "上传 PDF、图片、XLSX/XLSM/XLS/CSV、DOCX、DXF/DWG 或 ZIP/TAR/RAR/7Z。普通文档同步返回 m1.document.v2；归档自动分流为批次并返回可轮询的父子任务。",
+      "http": {
+        "method": "POST",
+        "path": "/ingest/sync",
+        "timeout_s": 240
+      },
+      "input_schema": {
+        "type": "object",
+        "required": ["file"],
+        "properties": {
+          "file": {
+            "oneOf": [
+              {
+                "type": "string",
+                "contentEncoding": "base64",
+                "description": "Base64 文件内容；推荐使用带 filename 的对象形式。"
+              },
+              {
+                "type": "object",
+                "required": ["filename", "content_b64"],
+                "properties": {
+                  "filename": {"type": "string"},
+                  "content_type": {"type": "string"},
+                  "content_b64": {"type": "string", "contentEncoding": "base64"}
+                }
+              }
+            ]
+          },
+          "doc_type_hint": {
+            "type": "string",
+            "description": "可选文档大类提示；只影响分类，不覆盖源文件事实。"
+          },
+          "document_subtype_hint": {
+            "type": "string",
+            "description": "可选文档子类型提示；只影响分类，不覆盖源文件事实。"
+          },
+          "semantic_enrichment": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否保留订单行的名称归一化、产品分类和名称属性等可选语义字段；关闭时仍执行 MinerU/Instructor 权威基础事实提取，但这些可选字段不会进入结果。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": ["task_id", "status"],
+        "properties": {
+          "task_id": {"type": "string"},
+          "status": {"type": "string"},
+          "processing_stage": {"type": "string"},
+          "schema_version": {
+            "type": ["string", "null"],
+            "description": "Compatibility alias for document_schema_version; null before a v2 document exists."
+          },
+          "document_schema_version": {"type": ["string", "null"]},
+          "document_subtype": {"type": "string"},
+          "needs_review": {"type": "boolean"},
+          "overall_confidence": {"type": ["number", "null"]},
+          "document": {
+            "type": ["object", "null"],
+            "required": [
+              "schema_version",
+              "source",
+              "document_type",
+              "document_subtype",
+              "header",
+              "lines",
+              "totals",
+              "field_meta",
+              "validation_issues"
+            ],
+            "properties": {
+              "schema_version": {"type": "string", "const": "m1.document.v2"},
+              "source": {
+                "type": "object",
+                "required": ["original_filename"],
+                "additionalProperties": true,
+                "properties": {
+                  "original_filename": {"type": "string"},
+                  "display_filename": {"type": ["string", "null"]},
+                  "sha256": {"type": "string"},
+                  "mime_type": {"type": "string"},
+                  "archive_path": {"type": ["string", "null"]},
+                  "sheet": {"type": ["string", "null"]},
+                  "page": {"type": ["integer", "null"]}
+                }
+              },
+              "document_type": {"type": "string"},
+              "document_subtype": {"type": "string"},
+              "order_type": {
+                "type": "string",
+                "enum": ["normal", "pre_order", "sample"],
+                "default": "normal",
+                "description": "订单类型：normal 正式订单；pre_order 预订单；sample 样品单（打样走独立子图）。"
+              },
+              "header": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "title": {"type": ["string", "null"]},
+                  "issuer": {"type": ["string", "null"]},
+                  "order_number": {"type": ["string", "null"]},
+                  "candidate_numbers": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+                  "contract_number": {"type": ["string", "null"]},
+                  "date_raw": {"type": ["string", "null"]},
+                  "date_standard": {"type": ["string", "null"], "format": "date"},
+                  "date_inferred": {"type": "boolean"},
+                  "delivery_date_raw": {"type": ["string", "null"]},
+                  "delivery_date_standard": {"type": ["string", "null"], "format": "date"},
+                  "settlement_method": {"type": ["string", "null"]},
+                  "delivery_address": {"type": ["string", "null"]},
+                  "buyer": {"type": ["string", "null"]},
+                  "seller": {"type": ["string", "null"]},
+                  "supplier": {"type": ["string", "null"]},
+                  "currency": {"type": ["string", "null"]}
+                }
+              },
+              "lines": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["line_id"],
+                  "properties": {
+                    "line_id": {"type": "string"},
+                    "line_no": {"type": ["integer", "string", "null"]},
+                    "model": {"type": ["string", "null"]},
+                    "product_code": {"type": ["string", "null"]},
+                    "name_raw": {"type": ["string", "null"]},
+                    "name_normalized": {"type": ["string", "null"]},
+                    "full_product_name": {"type": ["string", "null"]},
+                    "product_category": {"type": ["string", "null"]},
+                    "name_attributes": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "properties": {
+                        "interface": {"type": ["string", "null"]},
+                        "protocol_version": {"type": ["string", "null"]},
+                        "resolution": {"type": ["string", "null"]},
+                        "refresh_rate": {"type": ["string", "null"]},
+                        "cable_length": {"type": ["string", "null"]},
+                        "conductor": {"type": ["string", "null"]},
+                        "shielding": {"type": ["string", "null"]},
+                        "od": {"type": ["string", "null"]},
+                        "jacket": {"type": ["string", "null"]},
+                        "color": {"type": ["string", "null"]},
+                        "plug": {"type": ["string", "null"]},
+                        "aluminum_shell": {"type": ["string", "null"]},
+                        "braided_sleeve": {"type": ["string", "null"]},
+                        "plating": {"type": ["string", "null"]},
+                        "branding": {"type": ["string", "null"]},
+                        "custom": {"type": "object", "additionalProperties": true}
+                      }
+                    },
+                    "specification_raw": {"type": ["string", "null"]},
+                    "body_printing": {"type": ["string", "null"]},
+                    "color": {"type": ["string", "null"]},
+                    "quantity": {"type": ["number", "integer", "string", "null"]},
+                    "unit": {"type": ["string", "null"]},
+                    "unit_price_tax_included": {"type": ["number", "integer", "string", "null"]},
+                    "amount_tax_included": {"type": ["number", "integer", "string", "null"]},
+                    "unit_price_tax_excluded": {"type": ["number", "integer", "string", "null"]},
+                    "amount_tax_excluded": {"type": ["number", "integer", "string", "null"]},
+                    "package_quantity": {"type": ["number", "integer", "string", "null"]},
+                    "piece_count": {"type": ["number", "integer", "string", "null"]},
+                    "carton_specification": {"type": ["string", "null"]},
+                    "volume": {"type": ["number", "integer", "string", "null"]},
+                    "packaging_requirements": {"type": ["string", "null"]},
+                    "origin": {"type": ["string", "null"]},
+                    "remark": {"type": ["string", "null"]},
+                    "image_refs": {"type": "array", "items": {"type": "string"}},
+                    "custom_fields": {"type": "object", "additionalProperties": true},
+                    "raw_columns": {"type": "object", "additionalProperties": true}
+                  },
+                  "additionalProperties": true
+                }
+              },
+              "totals": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "declared_quantity": {"type": ["number", "integer", "string", "null"]},
+                  "calculated_quantity": {"type": ["number", "integer", "string", "null"]},
+                  "quantity_matches": {"type": ["boolean", "null"]},
+                  "declared_amount": {"type": ["number", "integer", "string", "null"]},
+                  "calculated_amount": {"type": ["number", "integer", "string", "null"]},
+                  "amount_matches": {"type": ["boolean", "null"]},
+                  "source_declared": {"type": "object", "additionalProperties": true},
+                  "system_calculated": {"type": "object", "additionalProperties": true},
+                  "matches": {"type": "object", "additionalProperties": {"type": ["boolean", "null"]}}
+                }
+              },
+              "field_meta": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "source_refs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    "inherited_from_merge": {"type": "boolean"},
+                    "inferred": {"type": "boolean"}
+                  }
+                }
+              },
+              "validation_issues": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["code", "message"],
+                  "additionalProperties": true,
+                  "properties": {
+                    "code": {"type": "string"},
+                    "severity": {"type": "string", "enum": ["info", "warning", "error"]},
+                    "message": {"type": "string"},
+                    "paths": {"type": "array", "items": {"type": "string"}},
+                    "source_refs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+                    "expected": {},
+                    "actual": {},
+                    "suggestion": {"type": ["string", "null"]}
+                  }
+                }
+              },
+              "needs_review": {"type": "boolean"},
+              "extraction": {"type": "object", "additionalProperties": true},
+              "scored_result": {"type": "object", "additionalProperties": true},
+              "fields": {"type": "array"},
+              "bom": {"type": "array", "items": {"type": "object", "additionalProperties": true}}
+            },
+            "additionalProperties": true
+          },
+          "extraction": {"type": ["object", "null"]},
+          "scored_result": {"type": ["object", "null"]}
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "ingest_m1_archive",
+      "description": "异步上传 ZIP/TAR/RAR/7Z 归档，安全递归展开并为父归档与每个叶子文档建立可查询任务。",
+      "http": {
+        "method": "POST",
+        "path": "/ingest/archive",
+        "timeout_s": 240
+      },
+      "input_schema": {
+        "type": "object",
+        "required": ["file"],
+        "properties": {
+          "file": {
+            "oneOf": [
+              {"type": "string", "contentEncoding": "base64"},
+              {
+                "type": "object",
+                "required": ["filename", "content_b64"],
+                "properties": {
+                  "filename": {"type": "string"},
+                  "content_type": {"type": "string"},
+                  "content_b64": {"type": "string", "contentEncoding": "base64"}
+                }
+              }
+            ]
+          },
+          "doc_type_hint": {"type": "string"},
+          "document_subtype_hint": {"type": "string"},
+          "semantic_enrichment": {"type": "boolean", "default": true}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": ["task_id", "status", "child_count", "child_ids"],
+        "additionalProperties": true,
+        "properties": {
+          "task_id": {"type": "string"},
+          "status": {"type": "string"},
+          "processing_stage": {"type": "string"},
+          "child_count": {"type": "integer"},
+          "child_ids": {"type": "array", "items": {"type": "string"}},
+          "async": {"type": "boolean"}
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_m1_task",
+      "description": "查询单个 M1 任务的阶段、终态、失败原因、完整 v2 文档和兼容结果；用于同步上传超时后的轮询。",
+      "http": {"method": "GET", "path": "/tasks/{task_id}"},
+      "input_schema": {
+        "type": "object",
+        "required": ["task_id"],
+        "properties": {
+          "task_id": {"type": "string"}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": ["task_id", "status"],
+        "additionalProperties": true,
+        "properties": {
+          "task_id": {"type": "string"},
+          "status": {"type": "string"},
+          "processing_stage": {"type": "string"},
+          "error": {"type": ["string", "null"]},
+          "document_schema_version": {"type": ["string", "null"]},
+          "document": {"type": ["object", "null"]}
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_m1_batch",
+      "description": "轮询归档或混合批次，返回父任务、全部子任务和完成/失败/待审核计数。",
+      "http": {"method": "GET", "path": "/batch/{parent_id}"},
+      "input_schema": {
+        "type": "object",
+        "required": ["parent_id"],
+        "properties": {
+          "parent_id": {"type": "string"}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": ["parent", "children", "child_count", "done_count", "failed_count", "review_count", "pending_count"],
+        "additionalProperties": false,
+        "properties": {
+          "parent": {"type": "object", "additionalProperties": true},
+          "children": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "child_count": {"type": "integer"},
+          "done_count": {"type": "integer"},
+          "failed_count": {"type": "integer"},
+          "review_count": {"type": "integer"},
+          "pending_count": {"type": "integer"}
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_m1_document",
+      "description": "按任务 ID 获取完整的 m1.document.v2 文档。返回确定性源文件事实、标准化订单行、字段证据与校验问题；旧 extraction/scored_result/fields/bom 字段继续保留。",
+      "http": {
+        "method": "GET",
+        "path": "/tasks/{task_id}/document"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": ["task_id"],
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "M1 任务 ID。"
+          }
+        }
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "m1.document.v2",
+        "type": "object",
+        "required": ["source"],
+        "additionalProperties": true,
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "m1.document.v2",
+            "default": "m1.document.v2"
+          },
+          "source": {"$ref": "#/$defs/document_source"},
+          "document_type": {
+            "type": "string",
+            "description": "文档大类，例如 order、inventory、equipment、mold、technical_document。"
+          },
+          "document_subtype": {
+            "type": "string",
+            "description": "细分模板类型，例如 stocking_order、customer_purchase_order、inventory_snapshot。"
+          },
+          "header": {"$ref": "#/$defs/document_header"},
+          "lines": {
+            "type": "array",
+            "items": {"$ref": "#/$defs/order_line"}
+          },
+          "totals": {"$ref": "#/$defs/document_totals"},
+          "field_meta": {
+            "type": "object",
+            "description": "JSONPath 到字段证据和置信度的映射。",
+            "additionalProperties": {"$ref": "#/$defs/field_metadata"}
+          },
+          "validation_issues": {
+            "type": "array",
+            "items": {"$ref": "#/$defs/validation_issue"}
+          },
+          "needs_review": {"type": "boolean"},
+          "extraction": {
+            "type": "object",
+            "description": "旧版抽取结果，兼容保留。",
+            "additionalProperties": true
+          },
+          "scored_result": {
+            "type": "object",
+            "description": "旧版置信度结果，兼容保留。",
+            "additionalProperties": true
+          },
+          "fields": {
+            "type": "array",
+            "description": "旧版字段列表，兼容保留。",
+            "items": {}
+          },
+          "bom": {
+            "type": "array",
+            "description": "订单行兼容别名；与 lines 同步。",
+            "items": {"type": "object", "additionalProperties": true}
+          }
+        },
+        "$defs": {
+          "document_source": {
+            "type": "object",
+            "required": ["original_filename"],
+            "additionalProperties": true,
+            "properties": {
+              "original_filename": {"type": "string"},
+              "display_filename": {"type": ["string", "null"]},
+              "sha256": {
+                "type": "string",
+                "description": "原始叶子文件 SHA-256。"
+              },
+              "mime_type": {"type": "string"},
+              "archive_path": {"type": ["string", "null"]},
+              "sheet": {"type": ["string", "null"]},
+              "page": {"type": ["integer", "null"]}
+            }
+          },
+          "source_reference": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "sheet": {"type": ["string", "null"]},
+              "page": {"type": ["integer", "null"]},
+              "cell": {"type": ["string", "null"]},
+              "range": {"type": ["string", "null"]},
+              "part": {"type": ["string", "null"]},
+              "archive_path": {"type": ["string", "null"]}
+            }
+          },
+          "identifier_candidate": {
+            "type": "object",
+            "required": ["value"],
+            "additionalProperties": true,
+            "properties": {
+              "value": {"type": "string"},
+              "kind": {"type": "string"},
+              "context": {"type": ["string", "null"]},
+              "source_refs": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/source_reference"}
+              },
+              "score": {"type": "number"},
+              "selected": {"type": "boolean"},
+              "hidden": {"type": "boolean"}
+            }
+          },
+          "document_header": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "title": {"type": ["string", "null"]},
+              "issuer": {"type": ["string", "null"]},
+              "order_number": {"type": ["string", "null"]},
+              "candidate_numbers": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/identifier_candidate"}
+              },
+              "contract_number": {"type": ["string", "null"]},
+              "date_raw": {"type": ["string", "null"]},
+              "date_standard": {
+                "type": ["string", "null"],
+                "format": "date"
+              },
+              "date_inferred": {"type": "boolean"},
+              "delivery_date_raw": {"type": ["string", "null"]},
+              "delivery_date_standard": {
+                "type": ["string", "null"],
+                "format": "date"
+              },
+              "settlement_method": {"type": ["string", "null"]},
+              "delivery_address": {"type": ["string", "null"]},
+              "buyer": {"type": ["string", "null"]},
+              "seller": {"type": ["string", "null"]},
+              "supplier": {"type": ["string", "null"]},
+              "currency": {"type": ["string", "null"]}
+            }
+          },
+          "name_attributes": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "interface": {"type": ["string", "null"]},
+              "protocol_version": {"type": ["string", "null"]},
+              "resolution": {"type": ["string", "null"]},
+              "refresh_rate": {"type": ["string", "null"]},
+              "cable_length": {"type": ["string", "null"]},
+              "conductor": {"type": ["string", "null"]},
+              "shielding": {"type": ["string", "null"]},
+              "od": {"type": ["string", "null"]},
+              "jacket": {"type": ["string", "null"]},
+              "color": {"type": ["string", "null"]},
+              "plug": {"type": ["string", "null"]},
+              "aluminum_shell": {"type": ["string", "null"]},
+              "braided_sleeve": {"type": ["string", "null"]},
+              "plating": {"type": ["string", "null"]},
+              "branding": {"type": ["string", "null"]},
+              "custom": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          "order_line": {
+            "type": "object",
+            "required": ["line_id"],
+            "additionalProperties": true,
+            "properties": {
+              "line_id": {"type": "string"},
+              "line_no": {"type": ["integer", "string", "null"]},
+              "model": {"type": ["string", "null"]},
+              "product_code": {"type": ["string", "null"]},
+              "name_raw": {"type": ["string", "null"]},
+              "name_normalized": {"type": ["string", "null"]},
+              "full_product_name": {"type": ["string", "null"]},
+              "product_category": {"type": ["string", "null"]},
+              "name_attributes": {"$ref": "#/$defs/name_attributes"},
+              "specification_raw": {"type": ["string", "null"]},
+              "body_printing": {"type": ["string", "null"]},
+              "color": {"type": ["string", "null"]},
+              "quantity": {"type": ["number", "string", "null"]},
+              "unit": {"type": ["string", "null"]},
+              "unit_price_tax_included": {"type": ["number", "string", "null"]},
+              "amount_tax_included": {"type": ["number", "string", "null"]},
+              "unit_price_tax_excluded": {"type": ["number", "string", "null"]},
+              "amount_tax_excluded": {"type": ["number", "string", "null"]},
+              "package_quantity": {"type": ["number", "string", "null"]},
+              "piece_count": {"type": ["number", "string", "null"]},
+              "carton_specification": {"type": ["string", "null"]},
+              "volume": {"type": ["number", "string", "null"]},
+              "packaging_requirements": {"type": ["string", "null"]},
+              "origin": {"type": ["string", "null"]},
+              "remark": {"type": ["string", "null"]},
+              "image_refs": {
+                "type": "array",
+                "items": {"type": "string"}
+              },
+              "custom_fields": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "raw_columns": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          "document_totals": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "declared_quantity": {"type": ["number", "string", "null"]},
+              "calculated_quantity": {"type": ["number", "string", "null"]},
+              "quantity_matches": {"type": ["boolean", "null"]},
+              "declared_amount": {"type": ["number", "string", "null"]},
+              "calculated_amount": {"type": ["number", "string", "null"]},
+              "amount_matches": {"type": ["boolean", "null"]},
+              "source_declared": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "system_calculated": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "matches": {
+                "type": "object",
+                "additionalProperties": {"type": ["boolean", "null"]}
+              }
+            }
+          },
+          "field_metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "source_refs": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/source_reference"}
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "inherited_from_merge": {"type": "boolean"},
+              "inferred": {"type": "boolean"}
+            }
+          },
+          "validation_issue": {
+            "type": "object",
+            "required": ["code", "message"],
+            "additionalProperties": true,
+            "properties": {
+              "code": {"type": "string"},
+              "severity": {
+                "type": "string",
+                "enum": ["info", "warning", "error"]
+              },
+              "message": {"type": "string"},
+              "paths": {
+                "type": "array",
+                "items": {"type": "string"}
+              },
+              "source_refs": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/source_reference"}
+              },
+              "expected": {},
+              "actual": {},
+              "suggestion": {"type": ["string", "null"]}
+            }
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "search_m1_orders",
+      "description": "按订单号、型号、产品名称、类别或日期范围检索 M1 的订单明细行。直接返回命中的完整行和 task_id，适合 Agent 回答订单字段与产品查询。",
+      "http": {
+        "method": "GET",
+        "path": "/orders/search"
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "order_number": {"type": "string"},
+          "model": {"type": "string"},
+          "name": {"type": "string"},
+          "interface": {"type": "string", "description": "接口类型（HDMI/USB/DP），匹配 name_attributes.interface"},
+          "length": {"type": "string", "description": "线材长度（如 20M），匹配 name_attributes.cable_length"},
+          "color": {"type": "string", "description": "颜色，匹配 name_attributes.color"},
+          "connector": {"type": "string", "description": "连接器/插头，匹配 name_attributes.plug"},
+          "conductor": {"type": "string", "description": "线芯/导体，匹配 name_attributes.conductor"},
+          "od": {"type": "string", "description": "线径（如 7.0mm），匹配 name_attributes.od"},
+
+          "category": {"type": "string"},
+          "date_from": {"type": "string", "format": "date"},
+          "date_to": {"type": "string", "format": "date"},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
+          "offset": {"type": "integer", "minimum": 0, "default": 0}
+        }
+      },
+      "output_schema": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["task_id", "line_id", "order_number", "line"],
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {"type": "string"},
+            "line_id": {"type": "string"},
+            "line_no": {"type": ["string", "integer", "null"]},
+            "order_number": {"type": "string"},
+            "document_date": {"type": "string"},
+            "model": {"type": "string"},
+            "product_code": {"type": "string"},
+            "name_raw": {"type": "string"},
+            "name_normalized": {"type": "string"},
+            "full_product_name": {"type": "string"},
+            "product_category": {"type": "string"},
+            "quantity": {"type": ["number", "null"]},
+            "unit": {"type": "string"},
+            "line": {"type": "object", "additionalProperties": true}
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "export_m1_order",
+      "description": "获取标准订单 Excel 的下载链接。链接对应包含订单头、产品明细、校验问题、原始证据四个 Sheet 的 .xlsx 文件。",
+      "http": {
+        "method": "GET",
+        "path": "/tasks/{task_id}/exports/order"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": ["task_id"],
+        "properties": {
+          "task_id": {"type": "string"}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": ["task_id", "filename", "content_type", "download_url", "generated"],
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {"type": "string"},
+          "filename": {"type": "string"},
+          "content_type": {"type": "string", "const": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+          "download_url": {"type": "string", "format": "uri"},
+          "generated": {"type": "boolean"}
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "search_m1_documents",
+      "description": "检索 M1 已持久化的 m1.document.v2 文档。支持全文、文档类型、子类型以及任意 JSON 字段路径和值过滤；返回显式摘要命中，随后可用 get_m1_document 获取完整文档。",
+      "http": {
+        "method": "GET",
+        "path": "/documents/search"
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "description": "标题、正文、订单号、文件名等全文关键词。"
+          },
+          "document_type": {"type": "string"},
+          "document_subtype": {"type": "string"},
+          "field_path": {
+            "type": "string",
+            "description": "要检索的 JSONPath，例如 $.lines[*].model。"
+          },
+          "field_value": {
+            "type": "string",
+            "description": "字段值关键词，与 field_path 配合使用。"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 50
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        }
+      },
+      "output_schema": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["task_id", "schema_version"],
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {"type": "string"},
+            "schema_version": {
+              "type": "string",
+              "const": "m1.document.v2"
+            },
+            "document_type": {"type": "string"},
+            "document_subtype": {"type": "string"},
+            "title": {"type": ["string", "null"]},
+            "order_number": {"type": ["string", "null"]},
+            "normalized_date": {"type": ["string", "null"]},
+            "filename": {"type": "string"},
+            "sha256": {"type": "string"}
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "list_m1_tasks",
+      "description": "查询 M1 已识别的文档任务列表，可按状态过滤（created/parsing/extracting/scoring/needs_review/done/failed）。当用户问‘识别过哪些文档’‘有哪些待审核’‘之前那份图识别完了吗’时使用。返回任务摘要（id/文件名/状态/置信度）。",
+      "http": {
+        "method": "GET",
+        "path": "/tasks"
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "可选状态过滤，如 needs_review、done。留空返回全部（不含子任务）。"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "description": "可选每页任务数；省略时为兼容旧调用返回全部。"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "分页偏移量；提供时必须同时提供 limit。"
+          }
+        },
+        "dependentRequired": {
+          "offset": ["limit"]
+        }
+      },
+      "output_schema": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "task_id": {"type": "string"},
+            "filename": {"type": "string"},
+            "status": {"type": "string"},
+            "needs_review": {"type": "boolean"},
+            "overall_confidence": {"type": ["number", "null"]}
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "list_m1_review_queue",
+      "description": "查询 M1 当前所有待人工审核（needs_review）的任务。当用户问‘有哪些识别结果需要我确认’‘待审核队列’时使用。这是 HITL 闭环的入口——返回的任务都等着人工修正或确认。",
+      "http": {
+        "method": "GET",
+        "path": "/review/queue"
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "description": "可选每页待审核任务数；省略时为兼容旧调用返回全部。"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "分页偏移量；提供时必须同时提供 limit。"
+          }
+        },
+        "dependentRequired": {
+          "offset": ["limit"]
+        }
+      },
+      "output_schema": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "task_id": {"type": "string"},
+            "filename": {"type": "string"},
+            "overall_confidence": {"type": ["number", "null"]}
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "submit_m1_review",
+      "description": "对 M1 某个待审核任务提交人工审核结果（通过/驳回 + 字段修正）。当人工确认了识别结果、或修正了错误字段后，用此工具闭合 HITL 环节，任务转入 done。approve=true 表示通过，false 表示驳回；corrections 是字段名→新值的映射。",
+      "http": {
+        "method": "POST",
+        "path": "/review/{task_id}"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": ["task_id"],
+        "properties": {
+          "task_id": {"type": "string"},
+          "approve": {"type": "boolean", "default": true},
+          "reviewer": {"type": "string", "default": "anonymous"},
+          "comment": {"type": "string"},
+          "corrections": {
+            "type": "object",
+            "description": "字段名→修正值的映射。修正过的字段置信度置为 1.0。"
+          },
+          "header_corrections": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "订单头 JSON 字段名到审核值的映射。"
+          },
+          "line_corrections": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["line_id", "corrections"],
+                  "properties": {
+                    "line_id": {"type": "string"},
+                    "corrections": {"type": "object", "additionalProperties": true}
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": {"type": "object", "additionalProperties": true}
+              }
+            ],
+            "description": "按 line_id 提交的明细行修正。"
+          },
+          "issue_resolutions": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["code"],
+                  "properties": {
+                    "code": {"type": "string"},
+                    "resolution": {"type": "string"},
+                    "comment": {"type": "string"}
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": true
+              }
+            ],
+            "description": "校验问题的处理结果。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "task_id": {"type": "string"},
+          "status": {"type": "string"},
+          "scored_result": {"type": "object"}
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "generate_m1_report",
+      "description": "为 M1 某个已识别任务生成 Markdown 综合报告（含字段表、置信度、明细）。当用户问‘给我出一份识别报告’‘导出这份文档的识别结果’时使用。单文件和批次父任务都支持。",
+      "http": {
+        "method": "POST",
+        "path": "/tasks/{task_id}/report"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": ["task_id"],
+        "properties": {
+          "task_id": {"type": "string"},
+          "note": {"type": "string", "description": "可选附加说明，会附在报告末尾。"},
+          "force": {"type": "boolean", "default": false, "description": "是否强制重新生成（否则用缓存）"}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "task_id": {"type": "string"},
+          "report_kind": {"type": "string"},
+          "report_status": {"type": "string"},
+          "message": {"type": "string"}
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "search_m1_knowledge",
+      "description": "在指定租户的 M1 Governed Wiki 中检索已激活知识。返回可追溯的字段索引、相关性分数、来源版本和证据坐标；默认不暴露 candidate/待审核数据。",
+      "http": {
+        "method": "GET",
+        "path": "/knowledge/search"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": ["q"],
+        "properties": {
+          "q": {"type": "string", "minLength": 1, "description": "必填关键词、订单号、型号、企业或产品名称。"},
+          "document_type": {"type": "string"},
+          "document_subtype": {"type": "string"},
+          "mode": {"type": "string", "enum": ["precise", "broad"], "default": "precise"},
+          "min_score": {"type": "number", "minimum": 0, "maximum": 1},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": ["tenant_id", "query", "include_candidate", "hits"],
+        "properties": {
+          "tenant_id": {"type": "string"},
+          "query": {"type": "string"},
+          "include_candidate": {"type": "boolean", "const": false},
+          "mode": {"type": "string", "enum": ["precise", "broad"]},
+          "min_score": {"type": "number"},
+          "hits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["index_id", "record_id", "score", "document"],
+              "properties": {
+                "index_id": {"type": "string"},
+                "record_id": {"type": "string"},
+                "score": {"type": "number"},
+                "keyword_score": {"type": "number"},
+                "vector_score": {"type": "number"},
+                "graph_score": {"type": "number"},
+                "match_reason": {"type": "string", "enum": ["exact_identifier", "keyword", "vector", "graph"]},
+                "document": {
+                  "type": "object",
+                  "required": ["tenant_id", "source_record_id", "version", "document_type", "status", "selected_fields"],
+                  "properties": {
+                    "tenant_id": {"type": "string"},
+                    "source_record_id": {"type": "string"},
+                    "version": {"type": "string"},
+                    "document_type": {"type": "string"},
+                    "document_subtype": {"type": "string"},
+                    "status": {"type": "string", "const": "active"},
+                    "text": {"type": "string"},
+                    "selected_fields": {"type": "object", "additionalProperties": true},
+                    "graph_keys": {"type": "array", "items": {"type": "string"}},
+                    "source_refs": {"type": "array", "items": {"type": "object", "additionalProperties": true}}
+                  },
+                  "additionalProperties": true
+                }
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "additionalProperties": true
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "list_m1_knowledge_entities",
+      "description": "列出指定租户中已激活的标准实体（文档、企业、订单、产品/物料、设备、模具），用于从 Wiki 主数据定位 canonical entity_id。",
+      "http": {
+        "method": "GET",
+        "path": "/knowledge/entities"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": ["lifecycle_status"],
+        "properties": {
+          "entity_type": {"type": "string"},
+          "lifecycle_status": {"type": "string", "const": "active", "default": "active"},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100},
+          "offset": {"type": "integer", "minimum": 0, "default": 0}
+        }
+      },
+      "output_schema": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["entity_id", "tenant_id", "entity_type", "canonical_key", "canonical_label", "lifecycle_status"],
+          "properties": {
+            "entity_id": {"type": "string"},
+            "tenant_id": {"type": "string"},
+            "entity_type": {"type": "string"},
+            "canonical_key": {"type": "string"},
+            "canonical_label": {"type": "string"},
+            "attributes": {"type": "object", "additionalProperties": true},
+            "lifecycle_status": {"type": "string", "const": "active"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "acl": {"type": "object", "additionalProperties": true}
+          },
+          "additionalProperties": true
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_m1_knowledge_entity",
+      "description": "按 canonical entity_id 获取一个租户内标准实体及其属性、生命周期、置信度和 ACL。跨租户或无权限时返回不存在。",
+      "http": {
+        "method": "GET",
+        "path": "/knowledge/entities/{entity_id}"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": ["entity_id"],
+        "properties": {
+          "entity_id": {"type": "string"}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": ["entity_id", "tenant_id", "entity_type", "canonical_key", "canonical_label", "lifecycle_status"],
+        "properties": {
+          "entity_id": {"type": "string"},
+          "tenant_id": {"type": "string"},
+          "entity_type": {"type": "string"},
+          "canonical_key": {"type": "string"},
+          "canonical_label": {"type": "string"},
+          "attributes": {"type": "object", "additionalProperties": true},
+          "lifecycle_status": {"type": "string"},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "acl": {"type": "object", "additionalProperties": true},
+          "valid_from": {"type": ["string", "null"], "format": "date-time"},
+          "valid_to": {"type": ["string", "null"], "format": "date-time"}
+        },
+        "additionalProperties": true
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_m1_knowledge_graph",
+      "description": "按 Wiki source_record_id 获取已激活的文档图投影，包含可追溯节点和关系；默认不返回 candidate 图。",
+      "http": {
+        "method": "GET",
+        "path": "/knowledge/graph/{source_record_id}"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": ["source_record_id"],
+        "properties": {
+          "source_record_id": {"type": "string"},
+          "version": {"type": "string", "description": "可选精确版本；留空取最新版本。"}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": ["projection_id", "tenant_id", "source_record_id", "version", "nodes", "edges"],
+        "properties": {
+          "projection_id": {"type": "string"},
+          "tenant_id": {"type": "string"},
+          "source_record_id": {"type": "string"},
+          "version": {"type": "string"},
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["node_id", "labels", "status", "properties"],
+              "properties": {
+                "node_id": {"type": "string"},
+                "labels": {"type": "array", "items": {"type": "string"}},
+                "status": {"type": "string", "const": "active"},
+                "confidence": {"type": "number"},
+                "source_refs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+                "properties": {"type": "object", "additionalProperties": true}
+              },
+              "additionalProperties": true
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["edge_id", "relation", "from_node", "to_node", "status"],
+              "properties": {
+                "edge_id": {"type": "string"},
+                "relation": {"type": "string"},
+                "from_node": {"type": "string"},
+                "to_node": {"type": "string"},
+                "status": {"type": "string", "const": "active"},
+                "confidence": {"type": "number"},
+                "source_refs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+                "properties": {"type": "object", "additionalProperties": true}
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "additionalProperties": true
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_m1_knowledge_stats",
+      "description": "返回指定租户的来源、版本、绑定、Wiki 字段事实、实体关系与搜索/图投影计数，用于判断基础资料入库覆盖率和积压。",
+      "http": {
+        "method": "GET",
+        "path": "/knowledge/stats"
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "required": ["tenant_id", "inventory", "claims", "projections"],
+        "properties": {
+          "tenant_id": {"type": "string"},
+          "inventory": {
+            "type": "object",
+            "required": [
+              "ingestion_batches",
+              "source_assets",
+              "source_occurrences",
+              "documents",
+              "document_versions",
+              "task_version_bindings",
+              "canonical_entities",
+              "external_identities",
+              "entity_aliases",
+              "projection_outbox"
+            ],
+            "properties": {
+              "ingestion_batches": {"$ref": "#/$defs/inventory_count"},
+              "source_assets": {"$ref": "#/$defs/inventory_count"},
+              "source_occurrences": {"$ref": "#/$defs/inventory_count"},
+              "documents": {"$ref": "#/$defs/inventory_count"},
+              "document_versions": {"$ref": "#/$defs/inventory_count"},
+              "task_version_bindings": {"$ref": "#/$defs/inventory_count"},
+              "canonical_entities": {"$ref": "#/$defs/inventory_count"},
+              "external_identities": {"$ref": "#/$defs/inventory_count"},
+              "entity_aliases": {"$ref": "#/$defs/inventory_count"},
+              "projection_outbox": {"$ref": "#/$defs/inventory_count"}
+            },
+            "additionalProperties": true
+          },
+          "claims": {
+            "type": "object",
+            "properties": {
+              "field_claims": {"type": "object", "additionalProperties": {"type": "integer"}},
+              "relationship_claims": {"type": "object", "additionalProperties": {"type": "integer"}},
+              "open_review_tasks": {"type": "integer"},
+              "open_conflicts": {"type": "integer"}
+            },
+            "additionalProperties": true
+          },
+          "projections": {
+            "type": "object",
+            "properties": {
+              "chunks": {"$ref": "#/$defs/projection_count"},
+              "index_documents": {"$ref": "#/$defs/projection_count"},
+              "graph_snapshots": {"$ref": "#/$defs/projection_count"},
+              "outbox": {"type": "object", "additionalProperties": {"type": "integer"}}
+            },
+            "additionalProperties": true
+          }
+        },
+        "$defs": {
+          "inventory_count": {
+            "type": "object",
+            "required": ["total"],
+            "properties": {
+              "total": {"type": "integer"},
+              "by_status": {"type": "object", "additionalProperties": {"type": "integer"}},
+              "by_projection_aggregate_status": {"type": "object", "additionalProperties": {"type": "integer"}}
+            },
+            "additionalProperties": true
+          },
+          "projection_count": {
+            "type": "object",
+            "required": ["total", "by_status"],
+            "properties": {
+              "total": {"type": "integer"},
+              "by_status": {"type": "object", "additionalProperties": {"type": "integer"}}
+            }
+          }
+        }
+      },
+      "execution": "sync"
+    }
+  ]
+}

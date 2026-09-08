@@ -1,0 +1,2150 @@
+{
+  "module": "m4",
+  "base_url": "http://m4:8000",
+  "tools": [
+    {
+      "name": "import_m4_purchase_suggestions",
+      "description": "[LEGACY/LOCAL] 导入采购建议 CSV。共享及生产环境默认关闭无租户导入；正式 M3→M4 交接必须使用 import_m4_purchase_suggestions_json，并携带租户、站点、TaskID、版本和授权。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/import-batches"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "description": "M3采购建议CSV文件。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "filename": {
+            "type": "string"
+          },
+          "total_rows": {
+            "type": "integer"
+          },
+          "valid_rows": {
+            "type": "integer"
+          },
+          "invalid_rows": {
+            "type": "integer"
+          },
+          "duplicate_rows": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "import_m4_purchase_suggestions_json",
+      "description": "以 JSON 方式导入采购建议到 M4（供 orchestrator 自动化调用，无需 multipart 文件上传）。接受采购建议数组，每条含 item_code、item_name、quantity、unit、supplier_name、required_date、project_code。当 orchestrator 需要把 M3 的采购建议自动流转到 M4 时使用——M3 导出的采购建议可直接作为此工具的 suggestions 参数。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/suggestions/import-json"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "suggestions"
+        ],
+        "properties": {
+          "suggestions": {
+            "type": "array",
+            "description": "采购建议数组，每条含 item_code、item_name、quantity、unit、supplier_name、required_date、project_code。",
+            "items": {
+              "type": "object",
+              "properties": {
+                "item_code": {
+                  "type": "string"
+                },
+                "item_name": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "number"
+                },
+                "unit": {
+                  "type": "string"
+                },
+                "supplier_name": {
+                  "type": "string"
+                },
+                "required_date": {
+                  "type": "string",
+                  "format": "date"
+                },
+                "project_code": {
+                  "type": "string"
+                },
+                "remark": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "tenant_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "受信 tenant 标识；提供时必须同时提供 site_id。"
+          },
+          "site_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "M4 采购归属站点；提供时必须同时提供 tenant_id，且与 data_scope 含义独立。"
+          },
+          "tracking_task_id": {
+            "type": "string",
+            "description": "根 Tracking TaskID（X-Yunpai-Task-ID 原样传播，幂等作用域一部分）"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "description": "幂等键：同 (tracking_task_id, idempotency_key) 同正文 replay 返回原批次，异正文 409"
+          },
+          "source_module": {
+            "type": "string",
+            "description": "来源模块（如 m3）"
+          },
+          "procurement_plan_id": {
+            "type": "string",
+            "description": "M3 采购计划 ID"
+          },
+          "procurement_plan_version_id": {
+            "type": "string",
+            "description": "M3 采购计划版本 ID"
+          },
+          "source_plan_checksum": {
+            "type": "string",
+            "description": "M3 计划内容 checksum（若提供）"
+          },
+          "order_id": {
+            "type": "string",
+            "description": "业务订单 ID"
+          },
+          "order_version": {
+            "type": "string",
+            "description": "订单版本（若提供）"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "bom_id": {
+            "type": "string"
+          },
+          "source_event_id": {
+            "type": "string",
+            "description": "来源事件 ID（稳定、可追溯）"
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "actor": {
+            "type": "string",
+            "description": "受信主体（展示/审计用，RBAC 收紧在后续 MR）"
+          },
+          "data_scope": {
+            "type": "string",
+            "description": "来源命令的数据可见范围审计值，不作为 site_id。"
+          }
+        },
+        "dependentRequired": {
+          "tenant_id": [
+            "site_id"
+          ],
+          "site_id": [
+            "tenant_id"
+          ]
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "filename": {
+            "type": "string"
+          },
+          "total_rows": {
+            "type": "integer"
+          },
+          "valid_rows": {
+            "type": "integer"
+          },
+          "invalid_rows": {
+            "type": "integer"
+          },
+          "duplicate_rows": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "site_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tracking_task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "idempotency_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_plan_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_plan_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_plan_checksum": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_order_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payload_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "items": {
+            "type": "array"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "list_m4_purchase_suggestions",
+      "description": "查询 M4 已导入的采购建议清单，可按批次、供应商、物料编码和校验状态过滤。当需要查看哪些采购建议有效、哪些需要修正时使用。",
+      "http": {
+        "method": "GET",
+        "path": "/api/m4/suggestions"
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "default": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "default": 20
+          },
+          "batch_id": {
+            "type": "integer"
+          },
+          "supplier_name": {
+            "type": "string"
+          },
+          "item_code": {
+            "type": "string"
+          },
+          "validation_status": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "page_size": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "generate_m4_purchase_orders",
+      "description": "根据同一导入批次的有效采购建议生成采购单草稿。tenant/site 省略时继承批次归属；显式提供时必须与批次一致。已追踪批次要求 X-Yunpai-Task-ID 与批次完全一致，生成结果持久化来源批次和同一 TaskID。历史无归属/无 TaskID 批次不会补造身份。同一完整建议 ID 集合重放返回原采购单；作用域、来源、TaskID 不一致或部分/混合复用返回冲突。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/purchase-orders/generate"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "suggestion_item_ids"
+        ],
+        "properties": {
+          "suggestion_item_ids": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "integer"
+            }
+          },
+          "tenant_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "可选；提供时必须同时提供 site_id，作为新采购单的 M4 归属。"
+          },
+          "site_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "可选；提供时必须同时提供 tenant_id，作为新采购单的 M4 归属。"
+          }
+        },
+        "dependentRequired": {
+          "tenant_id": [
+            "site_id"
+          ],
+          "site_id": [
+            "tenant_id"
+          ]
+        }
+      },
+      "output_schema": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer"
+            },
+            "purchase_order_no": {
+              "type": "string"
+            },
+            "tenant_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "site_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source_import_batch_id": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "tracking_task_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "supplier_name": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "required_date": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date"
+            },
+            "items": {
+              "type": "array"
+            }
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "list_m4_purchase_orders",
+      "description": "查询 M4 采购单列表，可按状态和供应商过滤。当用户需要查看采购单草稿、审核中、已批准或已发送的采购单时使用。",
+      "http": {
+        "method": "GET",
+        "path": "/api/m4/purchase-orders"
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "default": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "default": 20
+          },
+          "status": {
+            "type": "string"
+          },
+          "supplier_name": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "page_size": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_m4_purchase_order",
+      "description": "查询单个采购单的完整明细（含采购单号、供应商、状态、需求日期和行项）。当用户问‘这张采购单具体情况’‘采购单明细’‘这张单到哪个状态了’时使用。在审批或发送前用此确认采购单内容。",
+      "http": {
+        "method": "GET",
+        "path": "/api/m4/purchase-orders/{purchase_order_id}"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "purchase_order_id"
+        ],
+        "properties": {
+          "purchase_order_id": {
+            "type": "integer"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "purchase_order_no": {
+            "type": "string"
+          },
+          "supplier_name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "required_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "items": {
+            "type": "array"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "submit_m4_purchase_order_review",
+      "description": "将受控采购单草稿提交人工审核（draft/request_changes → pending_review）。必须绑定根 TaskID 以及当前采购单 revision/checksum；过期写入返回 409。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/purchase-orders/{purchase_order_id}/submit-review"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "purchase_order_id",
+          "expected_revision",
+          "expected_checksum"
+        ],
+        "properties": {
+          "purchase_order_id": {
+            "type": "integer"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "expected_checksum": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64
+          },
+          "comment": {
+            "type": "string",
+            "description": "可选送审备注。"
+          },
+          "operated_by": {
+            "type": "string",
+            "description": "可选操作人。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "purchase_order_no": {
+            "type": "string"
+          },
+          "supplier_name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "required_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "items": {
+            "type": "array"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "approve_m4_purchase_order",
+      "description": "人工批准受控采购单（pending_review → approved_for_message）。必须绑定根 TaskID 以及待审采购单的准确 revision/checksum；批准仅允许生成供应商邮件草稿，不代表已发送或已入库。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/purchase-orders/{purchase_order_id}/approve"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "purchase_order_id",
+          "expected_revision",
+          "expected_checksum"
+        ],
+        "properties": {
+          "purchase_order_id": {
+            "type": "integer"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "expected_checksum": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64
+          },
+          "comment": {
+            "type": "string",
+            "description": "可选审批备注。"
+          },
+          "operated_by": {
+            "type": "string",
+            "description": "可选审批人。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "purchase_order_no": {
+            "type": "string"
+          },
+          "supplier_name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "required_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "items": {
+            "type": "array"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "request_changes_m4_purchase_order",
+      "description": "人工将受控采购单退回修改（pending_review → request_changes）。必须绑定根 TaskID 以及待审采购单的准确 revision/checksum，并保留退回原因。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/purchase-orders/{purchase_order_id}/request-changes"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "purchase_order_id",
+          "expected_revision",
+          "expected_checksum"
+        ],
+        "properties": {
+          "purchase_order_id": {
+            "type": "integer"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "expected_checksum": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64
+          },
+          "comment": {
+            "type": "string",
+            "description": "可选驳回原因。"
+          },
+          "operated_by": {
+            "type": "string",
+            "description": "可选审批人。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "purchase_order_no": {
+            "type": "string"
+          },
+          "supplier_name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "required_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "items": {
+            "type": "array"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "generate_m4_purchase_inquiry_message",
+      "description": "基于已人工批准的采购单生成供应商邮件草稿。必须绑定采购单 revision/checksum，并保存人工核对的收件人和附件快照；仅生成草稿，不对外发送，也不产生到货或库存事实。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/purchase-orders/{purchase_order_id}/inquiry-message"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "purchase_order_id",
+          "expected_po_revision",
+          "expected_po_checksum",
+          "recipient_snapshot"
+        ],
+        "properties": {
+          "purchase_order_id": {
+            "type": "integer"
+          },
+          "expected_po_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "expected_po_checksum": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64
+          },
+          "recipient_snapshot": {
+            "type": "object",
+            "description": "人工核对的收件人快照；模拟验收必须明确 simulation_only=true。"
+          },
+          "attachment_snapshot": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email",
+              "wechat",
+              "dingtalk",
+              "feishu",
+              "enterprise_wechat",
+              "sms",
+              "manual"
+            ],
+            "default": "email"
+          },
+          "language": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "integer"
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content": {
+            "type": "string"
+          },
+          "channel": {
+            "type": "string"
+          },
+          "recipient": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "send_status": {
+            "type": "string"
+          },
+          "model_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "send_m4_purchase_order",
+      "description": "[LEGACY/LOCAL] 旧版采购单发送记录，仅供无 TaskID 的本地兼容流程；受控流程禁止调用。受控流程必须使用采购单审核、独立邮件审核和 record-simulated，且不得据此生成到货或库存事实。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/purchase-orders/{purchase_order_id}/send"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "purchase_order_id"
+        ],
+        "properties": {
+          "purchase_order_id": {
+            "type": "integer"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "purchase_order_no": {
+            "type": "string"
+          },
+          "supplier_name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "create_m4_supplier_reply",
+      "description": "保存供应商回复原文，用于后续 AI 解析交期、价格和异常。适用于采购员收到邮件、微信、钉钉等供应商回复后录入 M4。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/replies"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "purchase_order_id",
+          "purchase_order_no",
+          "supplier_name",
+          "reply_content"
+        ],
+        "properties": {
+          "purchase_order_id": {
+            "type": "integer"
+          },
+          "purchase_order_no": {
+            "type": "string"
+          },
+          "supplier_name": {
+            "type": "string"
+          },
+          "reply_content": {
+            "type": "string"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "purchase_order_id": {
+            "type": "integer"
+          },
+          "purchase_order_no": {
+            "type": "string"
+          },
+          "supplier_name": {
+            "type": "string"
+          },
+          "reply_content": {
+            "type": "string"
+          },
+          "received_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "parse_m4_supplier_reply",
+      "description": "解析供应商回复，提取承诺交期、价格、币种、税含标记和异常说明。低置信度结果会标记 need_human_review，需要人工确认。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/replies/{reply_id}/parse"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "reply_id"
+        ],
+        "properties": {
+          "reply_id": {
+            "type": "integer"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "delivery_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "unit_price": {
+            "type": [
+              "number",
+              "string",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": "string"
+          },
+          "tax_included": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "exception_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exception_description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confidence": {
+            "type": "number"
+          },
+          "need_human_review": {
+            "type": "boolean"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "confirm_m4_supplier_reply",
+      "description": "人工确认或修正供应商回复的 AI 解析结果。parse_m4_supplier_reply 标记 need_human_review=true 时，用此工具提交确认后的交期/价格/异常等字段，闭合 HITL 环节。确认后的结果才作为正式承诺写入追踪。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/replies/{reply_id}/confirm"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "reply_id",
+          "need_human_review"
+        ],
+        "properties": {
+          "reply_id": {
+            "type": "integer"
+          },
+          "delivery_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "确认后的承诺交期（YYYY-MM-DD）。"
+          },
+          "unit_price": {
+            "type": [
+              "number",
+              "string",
+              "null"
+            ],
+            "description": "确认后的单价。"
+          },
+          "currency": {
+            "type": "string",
+            "default": "CNY"
+          },
+          "tax_included": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "exception_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exception_description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "确认后的置信度，通常置为 1.0。"
+          },
+          "need_human_review": {
+            "type": "boolean",
+            "description": "是否仍需人工复核；人工确认时一般传 false。"
+          },
+          "confirmed_by": {
+            "type": "string",
+            "description": "可选确认人。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "delivery_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "unit_price": {
+            "type": [
+              "number",
+              "string",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": "string"
+          },
+          "tax_included": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "exception_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exception_description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confidence": {
+            "type": "number"
+          },
+          "need_human_review": {
+            "type": "boolean"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "list_m4_suppliers",
+      "description": "查询 M4 供应商主数据列表，可按供应商名称模糊过滤。当用户问‘有哪些供应商’‘某供应商的联系方式’‘供应商主数据’时使用。返回分页供应商信息（名称、联系人、邮箱、电话、默认渠道、状态）。",
+      "http": {
+        "method": "GET",
+        "path": "/api/m4/suppliers"
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "default": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "default": 20
+          },
+          "supplier_name": {
+            "type": "string",
+            "description": "可选供应商名称过滤。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "page_size": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "create_m4_supplier",
+      "description": "新建供应商主数据。当采购需要登记一个新供应商（含联系人、邮箱、电话、默认沟通渠道）时使用。新建后的供应商可用于采购单和询价消息。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/suppliers"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "supplier_name"
+        ],
+        "properties": {
+          "supplier_name": {
+            "type": "string"
+          },
+          "contact_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "default_channel": {
+            "type": "string",
+            "default": "email",
+            "description": "默认沟通渠道，如 email/wechat/dingtalk。"
+          },
+          "remark": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "default": "active"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "supplier_name": {
+            "type": "string"
+          },
+          "contact_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "email"
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default_channel": {
+            "type": "string"
+          },
+          "remark": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "update_m4_supplier",
+      "description": "更新供应商主数据（联系人、邮箱、电话、默认渠道、状态等）。当供应商信息变更（换联系人、改邮箱、停用）时使用。status 常用于启用/停用供应商。",
+      "http": {
+        "method": "PATCH",
+        "path": "/api/m4/suppliers/{supplier_id}"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "supplier_id"
+        ],
+        "properties": {
+          "supplier_id": {
+            "type": "integer"
+          },
+          "supplier_name": {
+            "type": "string"
+          },
+          "contact_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "default_channel": {
+            "type": "string"
+          },
+          "remark": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "如 active/inactive。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "supplier_name": {
+            "type": "string"
+          },
+          "contact_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "email"
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default_channel": {
+            "type": "string"
+          },
+          "remark": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "list_m4_tracking",
+      "description": "查询采购追踪结果，包括供应商承诺交期、价格、异常、到货状态和是否超期。当 M5 或项目总览需要了解采购执行状态时使用。",
+      "http": {
+        "method": "GET",
+        "path": "/api/m4/tracking"
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "default": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "default": 20
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "page_size": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "scan_m4_purchase_alerts",
+      "description": "触发 M4 采购预警扫描，生成超期、临期和供应商异常等预警。当需要刷新采购风险看板或联动催单时使用。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/alerts/scan"
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "scanned": {
+            "type": "integer"
+          },
+          "created": {
+            "type": "integer"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "list_m4_purchase_alerts",
+      "description": "查询 M4 采购预警列表，可按状态和预警类型过滤。当用户需要查看超期、临期、异常供应商回复或催单对象时使用。",
+      "http": {
+        "method": "GET",
+        "path": "/api/m4/alerts"
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "default": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "default": 20
+          },
+          "status": {
+            "type": "string"
+          },
+          "alert_type": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "page_size": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "generate_m4_urge_message",
+      "description": "为指定采购预警生成催单话术草稿（AI 生成，不直接发送）。只允许 open 状态预警调用；生成成功会覆盖该预警的催单文本，按 alert_type 区分已超期/临期/供应商异常措辞。当需要对超期或临期采购生成催单文本时使用。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/alerts/{alert_id}/urge-message"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "alert_id"
+        ],
+        "properties": {
+          "alert_id": {
+            "type": "integer"
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email",
+              "wechat",
+              "dingtalk",
+              "feishu",
+              "enterprise_wechat",
+              "sms",
+              "manual"
+            ],
+            "default": "wechat"
+          },
+          "language": {
+            "type": "string",
+            "description": "可选目标输出语言，如 zh-CN、en-US、ja-JP。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "alert_id": {
+            "type": "integer"
+          },
+          "urge_message": {
+            "type": "string"
+          },
+          "channel": {
+            "type": "string"
+          },
+          "model_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "query_m4_material_supply_snapshot",
+      "description": "按期望租户、站点、物料和观测窗口读取 M4 当前采购供应投影。tenant_id 必须与认证 principal 完全一致，返回 snapshot 也以 checksum 绑定该 scope。只返回具有 M4 tenant/site 归属的采购单行；无收货权威时 received/open 均为 null，未知 ETA 和 arrival confidence 保持 null，不能据此释放排程。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/material-supply-snapshots:query",
+        "required_headers": [
+          "Authorization",
+          "X-Yunpai-Task-ID",
+          "Idempotency-Key"
+        ]
+      },
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "x-yunpai-contract-schema": "urn:yunpai:m4:material-supply-query:v1",
+        "required": [
+          "schema_version",
+          "scenario_id",
+          "tenant_id",
+          "site_id",
+          "material_ids",
+          "as_of",
+          "horizon_end"
+        ],
+        "properties": {
+          "schema_version": {
+            "const": "m5.material-supply-query.v1"
+          },
+          "scenario_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "tenant_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "site_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "material_ids": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "as_of": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.[0-9]{1,6})?(?:Z|[+-]\\d{2}:\\d{2})$"
+          },
+          "horizon_end": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.[0-9]{1,6})?(?:Z|[+-]\\d{2}:\\d{2})$"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "x-yunpai-contract-schema": "urn:yunpai:m4:material-supply-snapshot:v1",
+        "required": [
+          "schema_version",
+          "snapshot_id",
+          "snapshot_version",
+          "scenario_id",
+          "tenant_id",
+          "site_id",
+          "as_of",
+          "horizon_end",
+          "generated_at",
+          "observed_at",
+          "entity_version",
+          "lines",
+          "completeness",
+          "input",
+          "input_checksum",
+          "checksum"
+        ],
+        "properties": {
+          "schema_version": {
+            "const": "m5.material-supply-snapshot.v1"
+          },
+          "snapshot_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "snapshot_version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "scenario_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "tenant_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "site_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "as_of": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "horizon_end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "entity_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "lines": {
+            "type": "array"
+          },
+          "completeness": {
+            "type": "object",
+            "required": [
+              "is_complete",
+              "missing_facts"
+            ],
+            "properties": {
+              "is_complete": {
+                "type": "boolean"
+              },
+              "missing_facts": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "input": {
+            "type": "object",
+            "x-yunpai-contract-schema": "urn:yunpai:m4:material-supply-query:v1"
+          },
+          "input_checksum": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "checksum": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "list_m4_material_supply_events",
+      "description": "按认证 tenant/site scope 和版本游标增量读取 M4 物料供应变化事件。用于排程发现供应商确认、ETA、发运、收货、质量冻结或取消后的确定性变化，并支持在同一 tenant/site 流内断点续取。",
+      "http": {
+        "method": "GET",
+        "path": "/api/m4/material-supply-events",
+        "required_headers": [
+          "Authorization",
+          "X-Yunpai-Task-ID"
+        ]
+      },
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "site_id"
+        ],
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "after_version": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "default": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 100
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "x-yunpai-contract-schema": "urn:yunpai:m4:material-supply-event-page:v1",
+        "required": [
+          "schema_version",
+          "site_id",
+          "after_version",
+          "items",
+          "has_more",
+          "next_after_version"
+        ],
+        "properties": {
+          "schema_version": {
+            "const": "m5.material-supply-event-page.v1"
+          },
+          "site_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "after_version": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "items": {
+            "type": "array"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "next_after_version": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_m4_material_supply_snapshot",
+      "description": "按 snapshot_id 和 snapshot_version 精确读取一份已持久化的 M4 供应快照。用于重试、审计或恢复排程输入；绝不以最新版本替代请求的不可变版本。",
+      "http": {
+        "method": "GET",
+        "path": "/api/m4/material-supply-snapshots/{snapshot_id}",
+        "required_headers": [
+          "Authorization",
+          "X-Yunpai-Task-ID"
+        ]
+      },
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "snapshot_id",
+          "snapshot_version"
+        ],
+        "properties": {
+          "snapshot_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "snapshot_version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "x-yunpai-contract-schema": "urn:yunpai:m4:material-supply-snapshot:v1",
+        "required": [
+          "schema_version",
+          "snapshot_id",
+          "snapshot_version",
+          "scenario_id",
+          "tenant_id",
+          "site_id",
+          "as_of",
+          "horizon_end",
+          "generated_at",
+          "observed_at",
+          "entity_version",
+          "lines",
+          "completeness",
+          "input",
+          "input_checksum",
+          "checksum"
+        ],
+        "properties": {
+          "schema_version": {
+            "const": "m5.material-supply-snapshot.v1"
+          },
+          "snapshot_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "snapshot_version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "scenario_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "tenant_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "site_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "as_of": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "horizon_end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "entity_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "lines": {
+            "type": "array"
+          },
+          "completeness": {
+            "type": "object"
+          },
+          "input": {
+            "type": "object",
+            "x-yunpai-contract-schema": "urn:yunpai:m4:material-supply-query:v1"
+          },
+          "input_checksum": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "checksum": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "confirm_m4_supplier_fact",
+      "description": "由已授权人员确认供应商回复的当前解析版本到一条 M4 采购单行。只在人工核对承诺日期或供应异常后使用；调用方不能提供确认人或确认时间，重复确认返回原结果，改变同一回复版本的事实返回冲突。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/replies/{reply_id}/supply-facts/confirm",
+        "required_headers": [
+          "Authorization"
+        ]
+      },
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "x-yunpai-contract-schema": "urn:yunpai:m4:supplier-fact-confirmation-request:v1",
+        "required": [
+          "reply_id",
+          "schema_version",
+          "purchase_order_item_id",
+          "supplier_reply_version",
+          "result"
+        ],
+        "properties": {
+          "reply_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "schema_version": {
+            "const": "m4.supplier-fact-confirmation-request.v1"
+          },
+          "purchase_order_item_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "supplier_reply_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "result": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "delivery_date": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date"
+              },
+              "exception_type": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 64
+              },
+              "exception_description": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 512
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "required": [
+                    "delivery_date"
+                  ],
+                  "properties": {
+                    "delivery_date": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "else": {
+                  "required": [
+                    "exception_type"
+                  ],
+                  "properties": {
+                    "exception_type": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "required": [
+                    "exception_type"
+                  ],
+                  "properties": {
+                    "exception_type": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "else": {
+                  "required": [
+                    "delivery_date"
+                  ],
+                  "properties": {
+                    "delivery_date": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "x-yunpai-contract-schema": "urn:yunpai:m4:supplier-fact-confirmation:v1",
+        "required": [
+          "schema_version",
+          "id",
+          "purchase_order_item_id",
+          "supplier_reply_id",
+          "supplier_reply_version",
+          "confirmed_by",
+          "confirmed_at",
+          "parse_confidence",
+          "delivery_date",
+          "exception_type",
+          "exception_description",
+          "result_payload",
+          "checksum"
+        ],
+        "properties": {
+          "schema_version": {
+            "const": "m4.supplier-fact-confirmation.v1"
+          },
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "purchase_order_item_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "supplier_reply_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "supplier_reply_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "confirmed_by": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confirmed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "parse_confidence": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "delivery_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "exception_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 64
+          },
+          "exception_description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 512
+          },
+          "result_payload": {
+            "type": "object"
+          },
+          "checksum": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "receive_m4_schedule_impact_proposal",
+      "description": "接收 M5 排程需求变更建议（schedule-impact proposal，经 orchestrator bridge 转交 M4）。幂等受理并持久化（同 task_id+proposal_id 或同 task_id+idempotency_key 重放返回同一结果）；应用（调整采购建议/PO）由后续人工/规则确认，本工具只受理记录。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m4/schedule-impact-proposals"
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "schema_version",
+          "proposal_id",
+          "plan_version",
+          "material_id"
+        ],
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "m5.procurement-impact-proposal.v1"
+          },
+          "proposal_id": {
+            "type": "string"
+          },
+          "plan_version": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "material_id": {
+            "type": "string"
+          },
+          "required_quantity": {
+            "type": "string"
+          },
+          "uom": {
+            "type": "string"
+          },
+          "previous_required_at": {
+            "type": "string"
+          },
+          "required_at": {
+            "type": "string"
+          },
+          "impact_type": {
+            "type": "string"
+          },
+          "affected_orders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason_code": {
+            "type": "string"
+          },
+          "m3_readiness_version": {
+            "type": "string"
+          },
+          "m4_supply_version": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "feedback_ref": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "received",
+          "proposal_id",
+          "replayed"
+        ],
+        "properties": {
+          "received": {
+            "type": "boolean"
+          },
+          "proposal_id": {
+            "type": "string"
+          },
+          "replayed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "execution": "sync"
+    }
+  ]
+}

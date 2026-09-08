@@ -1,0 +1,371 @@
+{
+  "module": "m2",
+  "base_url": "http://m2:8765",
+  "tools": [
+    {
+      "name": "run_bom_sop_workflow",
+      "description": "BOM/SOP 生成 Agent。接受结构化产品信息（产品名/编码/规格），检索历史 BOM 记录，生成草稿 BOM（物料清单）和 SOP（标准作业指导书 Word 文档）。核心流程：① 分析历史 BOM 模板 ② 入库历史数据 ③ 多维度相似度检索历史 BOM ④ 受控生成草稿 BOM（规则+可选LLM）⑤ 生成 80806-129 格式 SOP Word 文档（含工序流程图）。当用户需要根据产品需求生成 BOM 物料清单或 SOP 工艺文档时使用。所有输出为草稿状态(draft_created/human_input_required)，需人工审核。",
+      "http": {
+        "method": "POST",
+        "path": "/api/run",
+        "timeout_s": 300
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "product_profile"
+        ],
+        "properties": {
+          "product_profile": {
+            "type": "object",
+            "description": "Product profile.",
+            "required": [
+              "product_name"
+            ],
+            "properties": {
+              "product_name": {
+                "type": "string"
+              },
+              "product_code": {
+                "type": "string"
+              }
+            }
+          },
+          "requirement_text": {
+            "type": "string"
+          },
+          "rule_package_path": {
+            "type": "string",
+            "description": "受控 BOM 和物料编码规则包目录或 ZIP；禁用 demo 时必填。"
+          },
+          "history_bom_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "use_demo_sources": {
+            "type": "boolean",
+            "default": true
+          },
+          "template_confirmation": {
+            "type": "object",
+            "description": "模板确认记录；confirmed=false 时流程保持人工 Gate。"
+          },
+          "customer_answers": {
+            "type": "object",
+            "description": "按 open_customer_questions.field 提交的明确答案；只解除同字段问题。"
+          },
+          "routing_steps": {
+            "type": "array"
+          },
+          "machine_hints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "station": {
+            "type": "string"
+          },
+          "enable_bom_model": {
+            "type": "boolean",
+            "default": false
+          },
+          "enable_sop_model": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "draft_created | human_input_required | failed"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "workflow_sequence": {
+            "type": "array",
+            "description": "执行的步骤序列。"
+          },
+          "bom_generation": {
+            "type": "object",
+            "description": "BOM 生成结果（bom_lines + assumptions + evidence）。"
+          },
+          "sop_generation": {
+            "type": "object",
+            "description": "SOP 生成结果（Word 文档路径 + 流程图）。"
+          },
+          "open_customer_questions": {
+            "type": "array",
+            "description": "需要人工确认的开放问题。"
+          },
+          "artifacts": {
+            "type": "object",
+            "description": "产物文件路径。"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "search_m2_bom_history",
+      "description": "Search historical BOM library. Multi-dimensional similarity matching, returns reuse candidates + open questions.",
+      "http": {
+        "method": "POST",
+        "path": "/api/bom/history/search",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "product_name"
+        ],
+        "properties": {
+          "product_name": {
+            "type": "string"
+          },
+          "history_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "default": 5
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "array"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "generate_m2_bom_controlled",
+      "description": "Controlled draft BOM generation. Based on historical BOM + rule package + product requirements.",
+      "http": {
+        "method": "POST",
+        "path": "/api/bom/generate-controlled",
+        "timeout_s": 120
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "product_profile",
+          "rule_package_path"
+        ],
+        "properties": {
+          "product_profile": {
+            "type": "object"
+          },
+          "rule_package_path": {
+            "type": "string"
+          },
+          "history_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "standard_bom": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "onboard_m2_bom_template",
+      "description": "Analyze historical BOM files, extract column structure and numbering rules, generate template proposals.",
+      "http": {
+        "method": "POST",
+        "path": "/api/bom/templates/onboard",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "rule_package_path"
+        ],
+        "properties": {
+          "rule_package_path": {
+            "type": "string"
+          },
+          "history_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "proposals": {
+            "type": "array"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "generate_m2_sop",
+      "description": "Generate 80806-129 format SOP Word document with process flowchart.",
+      "http": {
+        "method": "POST",
+        "path": "/api/sop/generate",
+        "timeout_s": 120
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "product_name",
+          "part_no",
+          "document_no"
+        ],
+        "properties": {
+          "product_name": {
+            "type": "string"
+          },
+          "part_no": {
+            "type": "string"
+          },
+          "document_no": {
+            "type": "string"
+          },
+          "bom_items": {
+            "type": "array"
+          },
+          "routing_steps": {
+            "type": "array"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "artifacts": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "list_m2_runs",
+      "description": "只读列出 M2 已生成的 BOM/SOP run（读 workflow_manifest.json 摘要）。可按产品编码/产品名/订单号过滤。当用户问某订单/产品的 BOM 或 SOP 是否已生成、要查看已有制品时使用；返回 run_id、状态、order_id/product_code、制品链接（artifact_paths 值可直接传给前端 /api/m2/artifact?path= 下载或预览）。若按 order_id/product_code 过滤没有结果，必须去掉过滤条件再调用一次本工具列出全部 run，不要直接回答无结果。",
+      "http": {
+        "method": "GET",
+        "path": "/api/runs",
+        "timeout_s": 30
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "product_code": {
+            "type": "string",
+            "description": "产品编码过滤（可选）。"
+          },
+          "product_name": {
+            "type": "string",
+            "description": "产品名称模糊过滤（可选）。"
+          },
+          "order_id": {
+            "type": "string",
+            "description": "订单号过滤（可选），生成时已写入 manifest。"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 50,
+            "minimum": 1,
+            "maximum": 200
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array"
+              },
+              "total": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "get_m2_run",
+      "description": "只读获取单个 M2 BOM/SOP run 详情（workflow_manifest.json + 制品文件清单）。当用户要看某个已生成 run 的具体制品（BOM xlsx/json、SOP Word/流程图 PNG、校验 JSON）时使用；run_id 由 list_m2_runs 返回。",
+      "http": {
+        "method": "GET",
+        "path": "/api/runs/{run_id}",
+        "timeout_s": 30
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "run_id"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "description": "M2 run_id，来自 list_m2_runs。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "run": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      },
+      "execution": "sync"
+    }
+  ]
+}
