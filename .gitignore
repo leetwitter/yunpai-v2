@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# 运行时数据与大文件（永不进 git）
+runtime/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.tar.gz
+*.zip
+*.log
+uploads/
+evidence/
+
+# 本地环境
+.env
+.env.local
+node_modules/
+
+# IDE / OS
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
