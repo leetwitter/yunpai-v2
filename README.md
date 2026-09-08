@@ -21,7 +21,8 @@
 | `.project-to-act/` 五本账本 | 本项目唯一事实源（OVERVIEW/FEATURES/PROGRESS/VERSIONS/ACCEPTANCE） |
 | `.project-to-act/docs/01-编排重构-产品与实现思路.md` | **书一**：产品定位、现状诊断、新架构、迁移策略、里程碑 |
 | `.project-to-act/docs/02-编排重构-细分功能与代码级方案.md` | **书二**：逐细分功能的代码级设计 + 115 工具注册审查清单 |
-| `.project-to-act/docs/03-任务表-v2.xlsx` | 治理 §9 规范任务表（V2-M1~M5 分阶段） |
+| `.project-to-act/docs/03-功能需求对齐手册.md` | **书三**：功能卡式需求对齐手册（是什么/为了什么/验收点，全部挂需求文档出处） |
+| `.project-to-act/docs/04-任务表-v2.xlsx` | 治理 §9 规范任务表（V2-M1~M5 分阶段） |
 
 ## 资产来源
 
