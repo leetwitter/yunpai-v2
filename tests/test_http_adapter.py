@@ -176,6 +176,9 @@ async def test_http_binding_enforces_manifest_required_headers_before_request(mo
 
     monkeypatch.setattr(httpx, "AsyncClient", Client)
     registry = build_default_registry()
+    # M4 本地实现登记后，default registry 里这些工具已是 BOUND_LOCAL；本用例校验的是
+    # 「HTTP 适配器在发请求前执行 manifest required_headers 校验」→ 显式绑定 HTTP。
+    registry.bind_http({"m4": "http://m4.test"}, overwrite=True)
     with pytest.raises(ToolHTTPError, match="MISSING_REQUIRED_HEADER"):
         await registry.call(
             "query_m4_material_supply_snapshot",

@@ -76,6 +76,32 @@ class ToolHTTPError(RuntimeError):
         self.status_code = status_code
 
 
+#: 契约层「禁止远程调用」的稳定错误码（P0-5）。
+REMOTE_INVOCATION_FORBIDDEN = "REMOTE_INVOCATION_FORBIDDEN"
+
+#: 标记通用/专用 HTTP 适配器安装的 handler，供 call() 做防御性判定。
+_REMOTE_ADAPTER_FLAG = "__yunpai_remote_adapter__"
+
+
+def remote_invocation_forbidden(spec: ToolSpec) -> bool:
+    """该工具是否被契约禁止任何形式的远程执行（P0-5）。
+
+    ``local_only=true`` 或 ``remote_invocation="forbidden"`` 都表示「只能本地执行」：
+    ``bind_http`` 不得为其安装 HTTP 适配器，``call()`` 不得把调用转发到远端。
+    """
+    return bool(spec.local_only) or spec.remote_invocation == "forbidden"
+
+
+def mark_remote_adapter(handler: ToolHandler) -> ToolHandler:
+    """把 handler 标记为 HTTP 适配器（绑定期与执行期的共同判据）。"""
+    setattr(handler, _REMOTE_ADAPTER_FLAG, True)
+    return handler
+
+
+def is_remote_adapter(handler: ToolHandler) -> bool:
+    return bool(getattr(handler, _REMOTE_ADAPTER_FLAG, False))
+
+
 class ToolRegistry:
     """全局唯一工具注册表；可加载 JSON manifest 并绑定本地/HTTP handler。"""
 
@@ -118,6 +144,9 @@ class ToolRegistry:
                     timeout_s=float(http.get("timeout_s", 60)), tool_type=item.get("type", "tool"),
                     required_headers=tuple(http.get("required_headers", [])),
                     agent_endpoints=item.get("agent_endpoints", {}), tags=tuple(item.get("tags", [])),
+                    local_only=bool(item.get("local_only", False)),
+                    remote_invocation=str(item.get("remote_invocation", "") or ""),
+                    remote_invocation_reason=str(item.get("remote_invocation_reason", "") or ""),
                     **metadata,
                 ))
 
@@ -128,6 +157,16 @@ class ToolRegistry:
         if name not in self.specs:
             raise KeyError(f"unknown tool: {name}")
         spec = self.specs[name]
+        # P0-5 防御性断言：契约禁止远程调用的工具，绝不允许经由任何 HTTP 适配器执行。
+        # 放在入参校验之前——策略违规优先于参数形状，且保证不发起网络请求。
+        leaked = self.handlers.get(name)
+        if leaked is not None and remote_invocation_forbidden(spec) and is_remote_adapter(leaked):
+            raise ToolHTTPError(
+                name,
+                REMOTE_INVOCATION_FORBIDDEN,
+                spec.remote_invocation_reason
+                or "该工具禁止远程调用，只能由本地 handler 执行",
+            )
         errors = sorted(Draft202012Validator(spec.input_schema).iter_errors(payload), key=lambda e: list(e.path))
         if errors:
             raise ValueError(f"invalid input for {name}: {errors[0].message}")
@@ -149,6 +188,12 @@ class ToolRegistry:
     ) -> None:
         """按模块 base URL 将工具绑定为 HTTP handler，并保留合同校验。"""
         for name, spec in self.specs.items():
+            # P0-5：契约禁止远程调用的工具永不安装 HTTP 适配器，保留本地 handler。
+            # 守卫放在 tool_names 判定之前，因此同时覆盖 build_default_registry
+            # （M3_M4_ADAPTER_TOOL_NAMES）与 build_runtime_registry
+            # （set(registry.specs) - EXCLUDED - LOCAL_ONLY）两条绑定路径。
+            if remote_invocation_forbidden(spec):
+                continue
             if tool_names is not None and name not in tool_names:
                 continue
             if not overwrite and name in self.handlers:
@@ -228,7 +273,7 @@ class ToolRegistry:
                     return value["result"]
                 return value
 
-            self.handlers[name] = http_handler
+            self.handlers[name] = mark_remote_adapter(http_handler)
 
     def mcp_tools(self) -> list[dict[str, Any]]:
         return [spec.as_mcp_tool() for spec in self.specs.values()]

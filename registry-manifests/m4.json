@@ -5,6 +5,8 @@
     {
       "name": "import_m4_purchase_suggestions",
       "description": "[LEGACY/LOCAL] 导入采购建议 CSV。共享及生产环境默认关闭无租户导入；正式 M3→M4 交接必须使用 import_m4_purchase_suggestions_json，并携带租户、站点、TaskID、版本和授权。",
+      "deprecated": true,
+      "replaced_by": "import_m4_purchase_suggestions_json",
       "http": {
         "method": "POST",
         "path": "/api/m4/import-batches"
@@ -19,6 +21,10 @@
             "type": "string",
             "format": "binary",
             "description": "M3采购建议CSV文件。"
+          },
+          "filename": {
+            "type": "string",
+            "description": "可选；导入批次记录的原始文件名。本地 handler 读取，缺省 purchase_suggestions.csv。"
           }
         }
       },
@@ -808,6 +814,11 @@
     {
       "name": "send_m4_purchase_order",
       "description": "[LEGACY/LOCAL] 旧版采购单发送记录，仅供无 TaskID 的本地兼容流程；受控流程禁止调用。受控流程必须使用采购单审核、独立邮件审核和 record-simulated，且不得据此生成到货或库存事实。",
+      "deprecated": true,
+      "replaced_by": "generate_m4_purchase_inquiry_message",
+      "local_only": true,
+      "remote_invocation": "forbidden",
+      "remote_invocation_reason": "受控流程禁止调用旧版 /send。该工具只允许本地 handler 在无 tracking_task_id 的 legacy 兼容流程中使用；HTTP transport 下必须拒绝调用，不得转发到 POST /api/m4/purchase-orders/{purchase_order_id}/send。",
       "http": {
         "method": "POST",
         "path": "/api/m4/purchase-orders/{purchase_order_id}/send"
@@ -977,6 +988,9 @@
     {
       "name": "confirm_m4_supplier_reply",
       "description": "人工确认或修正供应商回复的 AI 解析结果。parse_m4_supplier_reply 标记 need_human_review=true 时，用此工具提交确认后的交期/价格/异常等字段，闭合 HITL 环节。确认后的结果才作为正式承诺写入追踪。",
+      "deprecated": true,
+      "replaced_by": "confirm_m4_supplier_fact",
+      "compatibility_wrapper": true,
       "http": {
         "method": "POST",
         "path": "/api/m4/replies/{reply_id}/confirm"
@@ -1151,6 +1165,10 @@
         "properties": {
           "supplier_name": {
             "type": "string"
+          },
+          "supplier_code": {
+            "type": "string",
+            "description": "可选；供应商编码。本地 handler 读取并落库（canonical 编码另经 ctx.canonical_supplier_code 冗余登记）。"
           },
           "contact_name": {
             "type": "string"

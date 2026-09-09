@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 import httpx
 import pytest
 
-from yunpai_orchestrator.registry import ToolHTTPError, build_default_registry
+from yunpai_orchestrator.registry import build_default_registry
 
 
 class _Response:
@@ -211,7 +211,10 @@ async def test_m3_approval_handoff_and_m4_supplier_fact_flow(monkeypatch):
     )
     po = orders[0]
 
-    with pytest.raises(ToolHTTPError, match="PO_APPROVAL_REQUIRED"):
+    # P0-5：``send_m4_purchase_order`` 不再有远程通道——bind_http 不为其安装 HTTP
+    # 适配器，调用落在本地 handler（本地库无该 PO → NOT_FOUND；受控 ctx 另有
+    # LEGACY_SEND_DISABLED，见 tests/test_m4_local_tools.py）。关键是**绝不转发**到 /send。
+    with pytest.raises(ValueError, match="NOT_FOUND|LEGACY_SEND_DISABLED"):
         await registry.call("send_m4_purchase_order", {"purchase_order_id": po["id"]}, context)
 
     po = await registry.call(
@@ -224,8 +227,11 @@ async def test_m3_approval_handoff_and_m4_supplier_fact_flow(monkeypatch):
         {"purchase_order_id": 1, "expected_revision": po["revision"], "expected_checksum": po["checksum"]},
         context,
     )
-    po = await registry.call("send_m4_purchase_order", {"purchase_order_id": 1}, context)
-    assert po["status"] == "sent"
+    # P0-5：``send_m4_purchase_order`` 是 local_only/remote_invocation=forbidden 的 legacy
+    # 兼容面——bind_http 不为其安装 HTTP 适配器，受控 ctx（带 task_id）一律拒绝本地出站，
+    # 因此绝不可能出现到 /send 的远程调用。
+    with pytest.raises(ValueError, match="NOT_FOUND|LEGACY_SEND_DISABLED"):
+        await registry.call("send_m4_purchase_order", {"purchase_order_id": 1}, context)
 
     reply = await registry.call(
         "create_m4_supplier_reply",
@@ -252,4 +258,8 @@ async def test_m3_approval_handoff_and_m4_supplier_fact_flow(monkeypatch):
     )
     assert fact["purchase_order_item_id"] == 21
     assert fact["checksum"].startswith("sha256:")
-    assert ("POST", "/api/m4/purchase-orders/1/send") in backend.calls
+    # P0-5 硬断言：远程 /send 通道必须不存在（本地 handler 才是唯一执行面）。
+    assert not [call for call in backend.calls if call[1].endswith("/send")]
+    from yunpai_orchestrator.registry import is_remote_adapter
+
+    assert not is_remote_adapter(registry.handlers["send_m4_purchase_order"])

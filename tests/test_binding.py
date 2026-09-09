@@ -39,10 +39,17 @@ def test_local_only_tools_bound_local(registry):
 
 
 def test_sandbox_marked_and_counted(registry):
+    """SANDBOX 名单已清空：M4 import_json 换成真实实现后回归 BOUND_LOCAL（P0）。
+
+    依据：rows-S5.md:67（V2 `binding.py:34` 列 SANDBOX → 替换后须移出并回归
+    BOUND_LOCAL）；INFRA-DECISIONS §6「M4 换成真实实现后**必须**同步改
+    `binding.py:34` 与该断言」。
+    """
     bindings = compute_bindings(registry)
-    assert bindings["import_m4_purchase_suggestions_json"] == BindingStatus.SANDBOX
+    assert bindings["import_m4_purchase_suggestions_json"] == BindingStatus.BOUND_LOCAL
     summary = {k: len(v) for k, v in describe(registry).items()}
-    assert summary["bound_local"] >= 30  # 31 本地 fixture（含 1 个 sandbox 拆出）
+    assert summary["sandbox"] == 0  # 无本地假实现残留
+    assert summary["bound_local"] >= 30  # 31 本地 fixture + M4 24 个本地实现
 
 
 def test_catalog_view_only_exposes_visible(registry):
