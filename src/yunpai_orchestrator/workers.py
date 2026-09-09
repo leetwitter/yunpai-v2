@@ -1153,6 +1153,14 @@ async def ingest_canonical(payload: dict[str, Any], ctx: dict[str, Any]) -> dict
             "evidence": [_evidence("catalog", "ingest_canonical", f"{entity_type} rows={result['data'].get('inserted_rows')} dup={result['data'].get('duplicate')}")]}
 
 
+from .m1_knowledge import (  # noqa: E402 - S2 M1-3 知识链（canonical 事实源，随迁）
+    knowledge_entity_get as _k_entity_get,
+    knowledge_graph_get as _k_graph_get,
+    knowledge_list_entities as _k_list_entities,
+    knowledge_search as _k_search,
+    knowledge_stats as _k_stats,
+)
+
 HANDLERS = {
     "data_import_run": m0_import,
     "data_import_status": m0_status,
@@ -1174,6 +1182,12 @@ HANDLERS = {
     "search_m1_documents": m1_documents_search,
     "export_m1_order": m1_export_order,
     "generate_m1_report": m1_generate_report,
+    # S2 M1-3：知识链 5 个（真实本地，canonical 事实源经 M0Store.list_entities）
+    "search_m1_knowledge": _k_search,
+    "list_m1_knowledge_entities": _k_list_entities,
+    "get_m1_knowledge_entity": _k_entity_get,
+    "get_m1_knowledge_graph": _k_graph_get,
+    "get_m1_knowledge_stats": _k_stats,
     "run_bom_sop_workflow": m2_bom,
     "run_m3_procurement_requirements": m3_mrp,
     "import_m4_purchase_suggestions_json": m4_purchase,
