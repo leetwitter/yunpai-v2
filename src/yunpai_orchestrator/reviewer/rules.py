@@ -147,17 +147,33 @@ def _hit(check: Check, result: dict[str, Any]) -> bool:
 
 
 def _diagnostics(result: dict[str, Any]) -> dict[str, Any]:
-    """从工具结果抽取可诊断信息，随 finding 一起进 Gate（「缺什么、怎么补」）。"""
+    """从工具结果抽取可诊断信息，随 finding 一起进 Gate（「缺什么、怎么补」）。
+
+    口径（按优先级取第一个非空）：
+    - ``code``：errors[0].code → result.code；
+    - ``message``：errors[0].message → result.message → ``data.recovery`` →
+      ``data.open_customer_questions[].question``（M2 skill 的补数问句）；
+    - ``missing_fields``：``data.missing`` → ``data.missing_fields`` →
+      ``result.missing_fields`` → ``data.open_customer_questions[].field``。
+    """
     errors = result.get("errors") if isinstance(result.get("errors"), list) else []
     first = errors[0] if errors and isinstance(errors[0], dict) else {}
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    questions = data.get("open_customer_questions")
+    questions = [q for q in questions if isinstance(q, dict)] if isinstance(questions, list) else []
     missing = data.get("missing") or data.get("missing_fields") or result.get("missing_fields") or []
     if not isinstance(missing, list):
         missing = []
+    missing = [item for item in missing if isinstance(item, (str, dict))]
+    if not missing:
+        missing = [str(q.get("field")) for q in questions if str(q.get("field") or "")]
+    message = str(first.get("message") or result.get("message") or data.get("recovery") or "")
+    if not message:
+        message = "；".join(str(q.get("question") or "") for q in questions if str(q.get("question") or ""))
     return {
         "code": str(first.get("code") or result.get("code") or ""),
-        "message": str(first.get("message") or result.get("message") or ""),
-        "missing_fields": [item for item in missing if isinstance(item, (str, dict))],
+        "message": message,
+        "missing_fields": missing,
     }
 
 

@@ -446,6 +446,15 @@ def test_blocked_input_gate_carries_diagnostics():
     assert set(legacy) == {"type", "tool", "step_id", "reason", "allowed_roles",
                            "payload_digest", "opened_at"}
 
+    # M2 skill 的补数问句（无 errors/missing_fields）也要能变成门上的可诊断信息
+    m2_like = {"code": "BLOCKED_INPUT", "status": "human_input_required",
+               "data": {"open_customer_questions": [
+                   {"field": "product_code_or_bom", "question": "请补充产品编码和已确认 BOM 行"}]}}
+    finding2 = rules.evaluate("run_bom_sop_workflow", m2_like)[0]
+    assert finding2["gate"] == "blocked_input"
+    assert finding2["message"] == "请补充产品编码和已确认 BOM 行"
+    assert finding2["missing_fields"] == ["product_code_or_bom"]
+
 
 def test_data_import_commit_keeps_fail_rule_and_blocked_input_path():
     """rows-S1「审查需决策」二选一的落地：失败=终态 fail；输入缺口=blocked_input 可恢复门。"""
