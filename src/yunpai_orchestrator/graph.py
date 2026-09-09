@@ -208,7 +208,10 @@ def reviewer_check_node(deps: GraphDeps) -> Callable:
         if gate_finding and tool not in authorized:
             gate = gate_mod.make_gate(gate_finding["gate"], tool, gate_finding["reason"],
                                       step_id=step_id,
-                                      payload_digest=str(summarize(result))[:200])
+                                      payload_digest=str(summarize(result))[:200],
+                                      code=str(gate_finding.get("code") or ""),
+                                      message=str(gate_finding.get("message") or ""),
+                                      missing_fields=list(gate_finding.get("missing_fields") or []))
             # 挂起前把 waiting_human 镜像写入 RunRepository（前端/GET 可见；节点返回前的 side-effect）。
             # checkpointer 与 runs 表同库（sqlite），写锁竞争会让单次 save 偶发失败且被吞，
             # 造成 run 记录丢失（GET 404/resume 不可用）——重试+退避后再放弃并告警。

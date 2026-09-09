@@ -37,8 +37,15 @@ class GateError(ValueError):
 
 
 def make_gate(gate_type: str, tool: str, reason: str, *, step_id: str = "",
-              payload_digest: str = "") -> dict[str, Any]:
-    return {
+              payload_digest: str = "", code: str = "", message: str = "",
+              missing_fields: list[Any] | None = None) -> dict[str, Any]:
+    """建门；``code``/``message``/``missing_fields`` 为可诊断字段（非空才写入）。
+
+    这三项由 ``rules.evaluate`` 从工具结果抽取后经 graph 传入：没有它们，
+    ``blocked_input`` 门只有静态 ``reason``，前端无法回答「缺什么、怎么补」。
+    不传时 Gate 形状与旧版逐字一致（向后兼容）。
+    """
+    gate: dict[str, Any] = {
         "type": gate_type,
         "tool": tool,
         "step_id": step_id,
@@ -47,6 +54,13 @@ def make_gate(gate_type: str, tool: str, reason: str, *, step_id: str = "",
         "payload_digest": payload_digest,
         "opened_at": now_iso(),
     }
+    if code:
+        gate["code"] = code
+    if message:
+        gate["message"] = message
+    if missing_fields:
+        gate["missing_fields"] = list(missing_fields)
+    return gate
 
 
 def authorize(gate: dict[str, Any], roles: list[str]) -> None:
