@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -21,6 +22,17 @@ from .contracts import normalize_contract_result
 
 SkillHandler = Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]]
 
+#: Skill 内部派发工具所需的 ToolRegistry。由 ``SkillRegistry`` **构造时注入**
+#: （``build_default_skill_registry(registry)``），在 ``SkillRegistry.call`` 执行
+#: handler 期间以 ContextVar 暴露给 handler——因此 **不占用 tool context 的键**
+#: （V2 的 ``tool_context()`` 契约保持干净，worker/executor.py:15-26 无需改动）。
+_TOOL_REGISTRY: ContextVar[Any | None] = ContextVar("yunpai_skill_tool_registry", default=None)
+
+
+def current_tool_registry() -> Any | None:
+    """当前 Skill 调用可用的 ToolRegistry（无则 None，由调用方给出可读错误）。"""
+    return _TOOL_REGISTRY.get()
+
 
 @dataclass(frozen=True)
 class SkillSpec:
@@ -35,10 +47,16 @@ class SkillSpec:
 
 
 class SkillRegistry:
-    """总规划 Agent 可见的高阶能力；Skill 内部可以编排多个工具或数据处理步骤。"""
+    """总规划 Agent 可见的高阶能力；Skill 内部可以编排多个工具或数据处理步骤。
 
-    def __init__(self) -> None:
+    ``tool_registry`` 在构造时注入（见 ``build_default_skill_registry``）：Skill 需要
+    经同一个已校验的 ToolRegistry 派发工具，但 V2 的 tool context 只承载请求语义键，
+    因此注入不走 context 字典，而由本类在 ``call`` 期间以 ContextVar 暴露。
+    """
+
+    def __init__(self, tool_registry: Any | None = None) -> None:
         self.specs: dict[str, SkillSpec] = {}
+        self.tool_registry = tool_registry
 
     def register(self, spec: SkillSpec) -> None:
         if spec.name in self.specs:
@@ -60,7 +78,11 @@ class SkillRegistry:
         if name not in self.specs:
             raise KeyError(f"unknown skill: {name}")
         spec = self.specs[name]
-        result = await spec.handler(payload, context)
+        token = _TOOL_REGISTRY.set(self.tool_registry)
+        try:
+            result = await spec.handler(payload, context)
+        finally:
+            _TOOL_REGISTRY.reset(token)
         if isinstance(result, dict):
             result = normalize_contract_result(result, source=f"skill:{name}", invoked_tools=result.get("invoked_tools", []))
             result = {
@@ -184,7 +206,7 @@ async def identify_business_data(payload: dict[str, Any], context: dict[str, Any
         tenant_id=str(context.get("tenant_id") or "default"),
         product_code=product_code,
         product_name=product_name,
-        reviewed_by=str(context.get("principal_id") or "operator"),
+        reviewed_by=str(context.get("actor_user") or context.get("principal_id") or "operator"),
     ) if product_code else []
     return {
         "skill": "business-data-identification",
@@ -231,12 +253,16 @@ async def _dispatch_registered_tool(
 ) -> dict[str, Any]:
     """Dispatch a high-level Skill through the same validated ToolRegistry.
 
-    The registry is injected by WorkerAgent and removed before a module handler
-    receives context, so Skill routing cannot bypass Tool contracts or HTTP
-    adapters. ``tool_payload`` is explicit; remaining fields are a convenience
-    for direct Skill calls and are filtered only for Skill control fields.
+    The registry is injected into ``SkillRegistry`` at construction time and exposed
+    through a ContextVar for the duration of the handler call, so it never enters the
+    tool context (``tool_context()`` stays a pure request-semantics dict). Module
+    handlers therefore cannot see the registry and cannot bypass Tool contracts or
+    HTTP adapters. ``context["_tool_registry"]`` is still honoured for callers that
+    pass it explicitly (legacy tests). ``tool_payload`` is explicit; remaining fields
+    are a convenience for direct Skill calls and are filtered only for Skill control
+    fields.
     """
-    registry = context.get("_tool_registry")
+    registry = context.get("_tool_registry") or _TOOL_REGISTRY.get()
     if registry is None:
         raise RuntimeError("skill execution requires a ToolRegistry")
     operation = str(payload.get("operation") or "default")
@@ -335,8 +361,13 @@ async def m5_lifecycle_control(payload: dict[str, Any], context: dict[str, Any])
     )
 
 
-def build_default_skill_registry() -> SkillRegistry:
-    registry = SkillRegistry()
+def build_default_skill_registry(tool_registry: Any | None = None) -> SkillRegistry:
+    """构建默认 Skill 面；``tool_registry`` 为 Skill 内部派发工具所用（见 §裁决 1）。
+
+    ``default_deps()`` 传入已构建的 ToolRegistry；不传时行为与旧版一致（Skill 内部
+    派发会抛 ``RuntimeError: skill execution requires a ToolRegistry``）。
+    """
+    registry = SkillRegistry(tool_registry)
     registry.register(SkillSpec(
         name="business-data-identification",
         description="识别云湃业务资料，抽取订单/BOM/工程文档字段，保留文件哈希和字段级证据，并写入可审核候选库。",

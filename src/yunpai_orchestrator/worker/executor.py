@@ -15,14 +15,19 @@ from .assembler import Assembler, blocked_envelope
 def tool_context(state: RunStateV2, tool: str) -> dict[str, Any]:
     request = state.get("request", {})
     principal = request.get("principal") or {}
+    actor_user = principal.get("user") or request.get("actor_user") or "agent"
     return {
         "task_id": state.get("task_id", ""),
         "run_id": state.get("run_id", ""),
         "tenant_id": state.get("tenant_id", "default"),
         "trace_id": state.get("run_id", ""),
         "idempotency_key": f"{state.get('task_id', 'task')}:{tool}",
-        "actor_user": principal.get("user") or request.get("actor_user") or "agent",
+        "actor_user": actor_user,
         "actor_role": principal.get("role") or request.get("actor_role") or "",
+        # 键名映射别名（INFRA-DECISIONS §1.2）：迁移进来的本地 handler 与 V2 自己的
+        # workers.py:183/187/766/772 都读 ``actor``，而本函数从未提供该键，导致
+        # 它们静默退化为 "operator"。此处只做同源别名，不引入第二事实源。
+        "actor": actor_user,
     }
 
 

@@ -52,7 +52,11 @@ def default_deps(config: Any = None, *, registry: ToolRegistry | None = None,
 
     cfg = config or OrchestratorConfig()
     reg = registry or build_default_registry()
-    sk = skills or build_default_skill_registry()
+    sk = skills or build_default_skill_registry(reg)
+    # Skill 内部派发必须走同一个 ToolRegistry（见 INFRA-DECISIONS §1）；
+    # 显式传入的 SkillRegistry 若未注入，则在此补上，避免 Skill 路径静默不可用。
+    if getattr(sk, "tool_registry", None) is None:
+        sk.tool_registry = reg
     sk.validate_tools(reg.specs)
     engine = WorkflowEngine()
     return GraphDeps(
