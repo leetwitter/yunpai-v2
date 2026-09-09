@@ -43,10 +43,17 @@ def _number(value: Any, default: float = 0.0) -> float:
 def _m0_store(ctx: dict[str, Any]):
     import os
 
+    # M0 分片 C1：配置 YUNPAI_M0_DB 时走进程内 canonical 写面（m0_import_store），
+    # 否则维持 M0SandboxStore 沙箱语义（不隐式读 runtime 大库）。
+    db_path = os.getenv("YUNPAI_M0_DB")
+    if db_path:
+        from .m0_import_store import CanonicalImportStore
+
+        return CanonicalImportStore(db_path)
     from .m0_sandbox import M0SandboxStore
 
-    db_path = ctx.get("m0_sandbox_db") or os.getenv("YUNPAI_M0_SANDBOX_DB") or "runtime/yunpai-m0-sandbox.sqlite"
-    return M0SandboxStore(db_path)
+    sandbox_db = ctx.get("m0_sandbox_db") or os.getenv("YUNPAI_M0_SANDBOX_DB") or "runtime/yunpai-m0-sandbox.sqlite"
+    return M0SandboxStore(sandbox_db)
 
 
 def _extract_uploaded_bom(files: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -117,11 +124,53 @@ async def m0_import(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, A
 
     files = payload.get("files") or []
     items = [item for item in files if isinstance(item, dict)]
+    store = _m0_store(ctx)
+    if getattr(store, "canonical", False):
+        # C1 canonical 模式：全部文件交给 store 统一处理——结构化 JSON → canonical 候选；
+        # 其余 → m0_quarantines 落库并随批次返回（不伪造候选）。
+        registered = store.register_batch(
+            task_id=str(ctx.get("task_id") or "local"),
+            tenant_id=str(ctx.get("tenant_id") or "default"),
+            files=items,
+            batch_id=payload.get("batch_id"),
+        )
+        batch_id = registered["batch_id"]
+        preview_documents = store.preview(batch_id).get("documents", [])
+        quarantined = registered.get("quarantined") or []
+        if not preview_documents:
+            return {"id": batch_id, "batch_id": batch_id, "status": "failed",
+                    "candidates": [], "quarantined": quarantined,
+                    "canonical": True, "environment": "local_canonical",
+                    "readback": {"available": False,
+                                 "detail": "没有可登记的结构化 records；原始业务文件解析由识别/解析链提供，不伪造候选"},
+                    "evidence": []}
+        return {
+            "id": batch_id, "batch_id": batch_id,
+            "status": "awaiting_review",
+            "candidates": [
+                {
+                    "candidate_id": doc["candidate_id"], "filename": doc["filename"], "sha256": doc["sha256"],
+                    "status": doc["review_status"], "document_kind": doc["document_kind"],
+                    "records": doc.get("payload_json") if isinstance(doc.get("payload_json"), list) else [],
+                    "evidence": [_evidence("m0", doc["filename"], "canonical 候选登记哈希")],
+                }
+                for doc in preview_documents
+            ],
+            "quarantined": quarantined,
+            "provider": "local_canonical",
+            "canonical": True,
+            "transport": "local",
+            "environment": "local_canonical",
+            "readback": {"available": False,
+                         "detail": "候选待人工裁决并 commit 后提供 canonical 回读"},
+            "evidence": [_evidence("m0", "import", f"{len(preview_documents)} canonical candidates registered")],
+        }
+
+    # ---- 沙箱默认路径（保持原行为） ----
     sniffed = sniff_documents(items)
     accepted = [item for item in sniffed if item.get("status") == "accepted"]
     skipped = [item for item in sniffed if item.get("status") != "accepted"]
     encoded_by_name = {str(item.get("filename")): item for item in items}
-    store = _m0_store(ctx)
     registered = store.register_batch(
         task_id=str(ctx.get("task_id") or "local"),
         tenant_id=str(ctx.get("tenant_id") or "default"),
@@ -209,6 +258,62 @@ async def m0_commit(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, A
             "readback": {"available": False, "detail": "未完成人工裁决，未发布 canonical"},
             "evidence": [_evidence("m0", batch_id, "commit 被拒：存在未裁决候选")],
         }
+    if getattr(store, "canonical", False):
+        # C1 canonical 模式：commit = 发布已 approve 候选到 canonical（只发已批、可回读）。
+        # canonical 语义要求发布前零未裁决（未裁决候选不允许与已发布批次悬空并存）。
+        if pending > 0:
+            return {
+                "status": "blocked", "code": "BLOCKED_INPUT",
+                "errors": [{"code": "PENDING_REVIEW", "message": f"batch {batch_id} 仍有 {pending} 个候选未裁决，禁止 commit", "details": []}],
+                "batch_id": batch_id,
+                "canonical": True, "environment": "local_canonical",
+                "readback": {"available": False, "detail": "未完成人工裁决，未发布 canonical"},
+                "evidence": [_evidence("m0", batch_id, "commit 被拒：存在未裁决候选")],
+            }
+        publish = store.publish(
+            batch_id,
+            actor=str(ctx.get("actor") or payload.get("approved_by") or "operator"),
+            human_override=bool(payload.get("human_override")),
+        )
+        if publish.get("status") == "no_approved_candidates":
+            return {
+                "status": "blocked", "code": "BLOCKED_INPUT",
+                "errors": [{"code": "NO_APPROVED_CANDIDATES", "message": f"batch {batch_id} 无已批准候选，禁止发布（存在未裁决/全部驳回）", "details": []}],
+                "batch_id": batch_id, "canonical": True, "environment": "local_canonical",
+                "readback": {"available": False, "detail": "无已批准候选"},
+                "evidence": [_evidence("m0", batch_id, "commit 被拒：无已批准候选")],
+            }
+        if publish.get("status") == "already_published":
+            return {
+                "status": "already_published", "duplicate": True, "batch_id": batch_id,
+                "canonical": True, "environment": "local_canonical",
+                "readback": {"available": True,
+                             "approved_candidates": publish.get("approved_candidates", 0),
+                             "ledger_count": publish.get("ledger_count", 0),
+                             "outbox_count": publish.get("outbox_count", 0),
+                             "detail": "重复 commit：批次已发布，返回既有回读"},
+                "evidence": [_evidence("m0", batch_id, "duplicate commit")],
+            }
+        return {
+            "status": "published",
+            "batch_id": batch_id,
+            "provider": "local_canonical",
+            "canonical": True,
+            "transport": "local",
+            "environment": "local_canonical",
+            "revision": str(publish.get("approved_candidates", 0)),
+            "ledger_id": batch_id,
+            "master_counts": {},
+            "pending_review_before_commit": 0,
+            "readback": {
+                "available": True,
+                "approved_candidates": publish.get("approved_candidates", 0),
+                "ledger_count": publish.get("ledger_count", 0),
+                "outbox_count": publish.get("outbox_count", 0),
+                "detail": "canonical 发布完成（进程内 local_canonical store）",
+            },
+            "evidence": [_evidence("m0", batch_id, "published canonical entities with ledger/outbox readback")],
+        }
     return {
         # 任务书 §1.4：data_import_commit=committed 只有在 canonical entity/version、
         # ledger、outbox 可回读时才成立。本地 sandbox 无真实 M0 表，故只记录意图，
@@ -229,6 +334,432 @@ async def m0_commit(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, A
         },
         "evidence": [_evidence("m0", batch_id or "fixture", "本地 sandbox 记录发布意图；未发布 canonical、无 ledger/outbox 回读，需人工 Gate 后才可对接真实 M0")],
     }
+
+
+async def m0_history(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """批次历史（canonical 模式）。"""
+    store = _m0_store(ctx)
+    if not getattr(store, "canonical", False):
+        raise ValueError("data_import_history 需要 YUNPAI_M0_DB canonical 库；sandbox 无历史语义")
+    return store.history(tenant_id=str(ctx.get("tenant_id") or "default"),
+                         limit=int(payload.get("limit") or 100))
+
+
+async def m0_quarantine_list(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """隔离区文件列表（canonical 模式）。"""
+    store = _m0_store(ctx)
+    if not getattr(store, "canonical", False):
+        raise ValueError("data_import_quarantine 需要 YUNPAI_M0_DB canonical 库；sandbox 无隔离语义")
+    # R1-REQ-2：store 已支持按批次过滤，契约已回补 batch_id。
+    return store.list_quarantine(tenant_id=str(ctx.get("tenant_id") or "default"),
+                                 limit=int(payload.get("limit") or 100),
+                                 batch_id=str(payload.get("batch_id") or "") or None)
+
+
+async def m0_rollback(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """按 ledger 回滚已发布批次（canonical 模式；证据保留）。"""
+    store = _m0_store(ctx)
+    if not getattr(store, "canonical", False):
+        raise ValueError("data_import_rollback 需要 YUNPAI_M0_DB canonical 库；sandbox 无回滚语义")
+    batch_id = str(payload.get("batch_id") or "")
+    if not batch_id:
+        raise ValueError("data_import_rollback 需要 batch_id")
+    return store.rollback(batch_id, actor=str(ctx.get("actor") or "operator"))
+
+
+def _require_canonical_store(store: Any, tool: str) -> None:
+    if not getattr(store, "canonical", False):
+        raise ValueError(f"{tool} 需要 YUNPAI_M0_DB canonical 库；sandbox 无 canonical 读语义")
+
+
+def _catalog_svc(ctx: dict[str, Any]):
+    """catalog 语义层（canonical-only）。"""
+    import os
+
+    from .m0_catalog_ingest import CatalogService
+
+    db_path = os.getenv("YUNPAI_M0_DB")
+    if not db_path:
+        raise ValueError("data_catalog_* / m0_*_import 需要 YUNPAI_M0_DB canonical 库；未配置时不做 catalog 语义（不伪造成功）")
+    return CatalogService(db_path)
+
+
+async def m0_read_entities(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    from .m0_facts import list_entities as _m0_list_entities
+
+    store = _m0_store(ctx)
+    _require_canonical_store(store, "list_m0_entities")
+    entity_type = str(payload.get("entity_type") or "")
+    if not entity_type:
+        raise ValueError("list_m0_entities 需要 entity_type")
+    tenant = str(payload.get("tenant_id") or ctx.get("tenant_id") or "default")
+    rows = _m0_list_entities(entity_type, tenant_id=tenant)
+    return {"success": True, "data": {"entity_type": entity_type, "tenant_id": tenant,
+                                      "count": len(rows), "entities": rows}}
+
+
+async def m0_read_inventory(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    from .m0_facts import inventory_rows
+
+    store = _m0_store(ctx)
+    _require_canonical_store(store, "list_m0_inventory")
+    tenant = str(ctx.get("tenant_id") or "default")
+    rows = inventory_rows(tenant_id=tenant,
+                          material_code=str(payload.get("material_code") or "") or None,
+                          limit=int(payload.get("limit") or 0) or None)
+    return {"success": True, "data": {"tenant_id": tenant, "count": len(rows), "inventory": rows}}
+
+
+async def m0_read_documents(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    from .m0_facts import document_rows
+
+    store = _m0_store(ctx)
+    _require_canonical_store(store, "list_m0_documents")
+    tenant = str(ctx.get("tenant_id") or "default")
+    rows = document_rows(tenant_id=tenant,
+                         doc_type=str(payload.get("doc_type") or "") or None,
+                         product_code=str(payload.get("product") or payload.get("material") or "") or None,
+                         limit=int(payload.get("limit") or 0) or None)
+    return {"success": True, "data": {"tenant_id": tenant, "count": len(rows), "documents": rows}}
+
+
+async def m0_product_overview(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    from .m0_facts import product_overview as _overview
+
+    store = _m0_store(ctx)
+    _require_canonical_store(store, "get_m0_product_overview")
+    product_code = str(payload.get("product_code") or "")
+    if not product_code:
+        raise ValueError("get_m0_product_overview 需要 product_code")
+    tenant = str(ctx.get("tenant_id") or "default")
+    return {"success": True, "data": _overview(product_code, tenant_id=tenant)}
+
+
+async def m0_product_graph(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    from .m0_facts import product_graph as _graph
+
+    store = _m0_store(ctx)
+    _require_canonical_store(store, "get_m0_product_graph")
+    product_code = str(payload.get("product_code") or "")
+    if not product_code:
+        raise ValueError("get_m0_product_graph 需要 product_code")
+    tenant = str(ctx.get("tenant_id") or "default")
+    depth = int(payload.get("depth") or 2)
+    return {"success": True, "data": _graph(product_code, tenant_id=tenant, depth=depth)}
+
+
+async def catalog_ingest_validate(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """data_catalog_ingest_validate：m0.ingest.v1 dry-run（canonical-only，无写）。"""
+    records = payload.get("records") or []
+    if not isinstance(records, list) or not records:
+        raise ValueError("data_catalog_ingest_validate 需要 records 数组（≥1）")
+    if len(records) > 5000:
+        raise ValueError("records 超过上限 5000")
+    svc = _catalog_svc(ctx)
+    report = svc.validate_records(
+        records, tenant_id=str(ctx.get("tenant_id") or "default"),
+        task_id=str(ctx.get("task_id") or ""),
+        actor=str(ctx.get("actor") or "operator"))
+    return {"success": True, "data": report, "errors": [],
+            "trace_id": _trace(ctx, "data_catalog_ingest_validate"),
+            "evidence": [_evidence("m0", "catalog", f"dry-run records={report['summary']['records']} errors={report['summary']['errors']}")]}
+
+
+async def catalog_ingest_publish(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """data_catalog_ingest_publish：approved 记录原子发布（canonical-only）。"""
+    records = payload.get("records") or []
+    if not isinstance(records, list) or not records:
+        raise ValueError("data_catalog_ingest_publish 需要 records 数组（≥1）")
+    if len(records) > 5000:
+        raise ValueError("records 超过上限 5000")
+    svc = _catalog_svc(ctx)
+    try:
+        data = svc.publish_records(
+            records, tenant_id=str(ctx.get("tenant_id") or "default"),
+            task_id=str(ctx.get("task_id") or ""),
+            actor=str(ctx.get("actor") or "operator"))
+    except ValueError as exc:
+        from .m0_catalog_ingest import CatalogValidationError
+
+        if isinstance(exc, CatalogValidationError):
+            return {"success": False, "code": exc.code,
+                    "errors": [{"code": exc.code, "message": str(exc), "details": []}],
+                    "data": exc.report, "trace_id": _trace(ctx, "data_catalog_ingest_publish"),
+                    "evidence": [_evidence("m0", "catalog", f"publish rejected: {exc.code}")]}
+        raise
+    return {"success": True, "data": data, "errors": [],
+            "trace_id": _trace(ctx, "data_catalog_ingest_publish"),
+            "evidence": [_evidence("m0", "catalog",
+                                   f"published={data.get('published')} duplicates={data.get('duplicates')}")]}
+
+
+async def catalog_document_candidate_validate(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """data_catalog_document_candidate_validate：候选 dry-run（canonical-only，无写）。"""
+    from .m0_catalog_ingest import adapt_document_candidates, document_relation_issues, merge_relation_issues
+
+    candidates = payload.get("candidates") or []
+    if not isinstance(candidates, list) or not candidates:
+        raise ValueError("data_catalog_document_candidate_validate 需要 candidates 数组（≥1）")
+    if len(candidates) > 5000:
+        raise ValueError("candidates 超过上限 5000")
+    tenant = str(ctx.get("tenant_id") or "default")
+    svc = _catalog_svc(ctx)
+    adaptation = adapt_document_candidates(candidates, tenant_id=tenant,
+                                           actor=str(ctx.get("actor") or "operator"))
+    validation = None
+    if adaptation["valid"]:
+        report = svc.validate_records(
+            adaptation["records"], tenant_id=tenant,
+            task_id=str(ctx.get("task_id") or ""),
+            actor=str(ctx.get("actor") or "operator"))
+        rel_issues = document_relation_issues(adaptation["records"], tenant_id=tenant,
+                                              lookup=svc._entity_lookup)
+        validation = merge_relation_issues(report, rel_issues)
+    data = {"adaptation": adaptation, "validation": validation,
+            "publishable": bool(validation and validation["publishable"])}
+    return {"success": True, "data": data, "errors": [],
+            "trace_id": _trace(ctx, "data_catalog_document_candidate_validate"),
+            "evidence": [_evidence("m0", "catalog",
+                                   f"doc-candidates dry-run adapted={len(adaptation['records'])} errors={adaptation['summary']['errors']}")]}
+
+
+async def catalog_document_candidate_publish(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """data_catalog_document_candidate_publish：approved 候选 → document 实体+产品文档边。"""
+    candidates = payload.get("candidates") or []
+    if not isinstance(candidates, list) or not candidates:
+        raise ValueError("data_catalog_document_candidate_publish 需要 candidates 数组（≥1）")
+    if len(candidates) > 5000:
+        raise ValueError("candidates 超过上限 5000")
+    svc = _catalog_svc(ctx)
+    try:
+        data = svc.publish_documents(
+            candidates, tenant_id=str(ctx.get("tenant_id") or "default"),
+            task_id=str(ctx.get("task_id") or ""),
+            actor=str(ctx.get("actor") or "operator"))
+    except ValueError as exc:
+        from .m0_catalog_ingest import CatalogValidationError
+
+        if isinstance(exc, CatalogValidationError):
+            return {"success": False, "code": exc.code,
+                    "errors": [{"code": exc.code, "message": str(exc), "details": []}],
+                    "data": exc.report, "trace_id": _trace(ctx, "data_catalog_document_candidate_publish"),
+                    "evidence": [_evidence("m0", "catalog", f"doc-candidates publish rejected: {exc.code}")]}
+        raise
+    return {"success": True, "data": data, "errors": [],
+            "trace_id": _trace(ctx, "data_catalog_document_candidate_publish"),
+            "evidence": [_evidence("m0", "catalog",
+                                   f"doc published={data['publication'].get('published')} duplicates={data['publication'].get('duplicates')}")]}
+
+
+def _file_inputs(payload: dict[str, Any]) -> tuple[str, bytes, str, str, str, str]:
+    """file 端点公共参数抽取：file{filename,content_b64} + 模板/来源/审核。"""
+    import base64 as _b64
+
+    file = payload.get("file") or {}
+    if not isinstance(file, dict) or not file.get("filename") or not file.get("content_b64"):
+        raise ValueError("file{filename, content_b64} 必填")
+    try:
+        raw = _b64.b64decode(str(file.get("content_b64")), validate=True)
+    except ValueError as exc:
+        raise ValueError(f"file.content_b64 非法 base64: {exc}") from exc
+    template_version = str(payload.get("template_version") or "")
+    source_system = str(payload.get("source_system") or "")
+    source_external_id = str(payload.get("source_external_id") or "")
+    review_status = str(payload.get("review_status") or "candidate")
+    return (str(file.get("filename")), raw, template_version, source_system,
+            source_external_id, review_status)
+
+
+async def catalog_file_validate(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """data_catalog_file_validate：版本化 CSV/Excel 模板 dry-run（canonical-only，无写）。"""
+    from .m0_catalog_ingest import merge_relation_issues, product_dependency_issues
+    from .m0_catalog_templates import adapt_tabular_file
+
+    filename, raw, template_version, source_system, source_external_id, review_status = _file_inputs(payload)
+    tenant = str(ctx.get("tenant_id") or "default")
+    actor = str(ctx.get("actor") or "operator")
+    svc = _catalog_svc(ctx)
+    adaptation = adapt_tabular_file(
+        filename=filename, data=raw, template_version=template_version,
+        tenant_id=tenant, source_system=source_system, source_external_id=source_external_id,
+        review_status=review_status, reviewed_by=actor if review_status in ("approved", "rejected") else "")
+    validation = None
+    if adaptation["valid"]:
+        report = svc.validate_records(adaptation["records"], tenant_id=tenant,
+                                      task_id=str(ctx.get("task_id") or ""), actor=actor)
+        rel = product_dependency_issues(adaptation["records"], tenant_id=tenant,
+                                        lookup=svc._entity_lookup)
+        validation = merge_relation_issues(report, rel)
+    data = {"adaptation": adaptation, "validation": validation,
+            "publishable": bool(validation and validation["publishable"])}
+    return {"success": True, "data": data, "errors": [],
+            "trace_id": _trace(ctx, "data_catalog_file_validate"),
+            "evidence": [_evidence("m0", "catalog",
+                                   f"file dry-run adapted={adaptation['summary']['records']} errors={adaptation['summary']['errors']}")]}
+
+
+async def catalog_file_publish(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """data_catalog_file_publish：approved 模板文件 → 发布（计数在 data.publication）。"""
+    from .m0_catalog_ingest import merge_relation_issues, product_dependency_issues
+    from .m0_catalog_templates import adapt_tabular_file
+
+    filename, raw, template_version, source_system, source_external_id, review_status = _file_inputs(payload)
+    if review_status != "approved":
+        return {"success": False, "code": "REVIEW_REQUIRED",
+                "errors": [{"code": "REVIEW_REQUIRED",
+                            "message": "data_catalog_file_publish 需要 review_status=approved", "details": []}],
+                "data": {}, "trace_id": _trace(ctx, "data_catalog_file_publish"),
+                "evidence": [_evidence("m0", "catalog", "file publish rejected: review_status != approved")]}
+    tenant = str(ctx.get("tenant_id") or "default")
+    actor = str(ctx.get("actor") or "operator")
+    svc = _catalog_svc(ctx)
+    adaptation = adapt_tabular_file(
+        filename=filename, data=raw, template_version=template_version,
+        tenant_id=tenant, source_system=source_system, source_external_id=source_external_id,
+        review_status="approved", reviewed_by=actor)
+    if not adaptation["valid"]:
+        return {"success": False, "code": "VALIDATION_FAILED",
+                "errors": [{"code": "VALIDATION_FAILED",
+                            "message": "模板适配失败（见 data.adaptation.issues）", "details": []}],
+                "data": {"adaptation": adaptation, "validation": None, "publishable": False},
+                "trace_id": _trace(ctx, "data_catalog_file_publish"),
+                "evidence": [_evidence("m0", "catalog", "file publish rejected: adaptation invalid")]}
+    report = svc.validate_records(adaptation["records"], tenant_id=tenant,
+                                  task_id=str(ctx.get("task_id") or ""), actor=actor)
+    rel = product_dependency_issues(adaptation["records"], tenant_id=tenant,
+                                    lookup=svc._entity_lookup)
+    report = merge_relation_issues(report, rel)
+    if not report["valid"] or not report["publishable"]:
+        flat = [i for r in report["records"] for i in r["issues"]]
+        if any(i["code"] == "IDEMPOTENCY_CONFLICT" for i in flat):
+            code = "IDEMPOTENCY_CONFLICT"
+        elif any(i["code"] == "UNRESOLVED_RELATION_ENDPOINT" for i in flat):
+            code = "UNRESOLVED_RELATION_ENDPOINT"
+        elif not report["valid"]:
+            code = "VALIDATION_FAILED"
+        else:
+            code = "REVIEW_REQUIRED"
+        return {"success": False, "code": code,
+                "errors": [{"code": code, "message": code, "details": []}],
+                "data": {"adaptation": adaptation, "validation": report, "publishable": False},
+                "trace_id": _trace(ctx, "data_catalog_file_publish"),
+                "evidence": [_evidence("m0", "catalog", f"file publish rejected: {code}")]}
+    try:
+        publication = svc.publish_records(adaptation["records"], tenant_id=tenant,
+                                          task_id=str(ctx.get("task_id") or ""), actor=actor)
+    except ValueError as exc:
+        from .m0_catalog_ingest import CatalogValidationError
+
+        if isinstance(exc, CatalogValidationError):
+            return {"success": False, "code": exc.code,
+                    "errors": [{"code": exc.code, "message": str(exc), "details": []}],
+                    "data": exc.report, "trace_id": _trace(ctx, "data_catalog_file_publish"),
+                    "evidence": [_evidence("m0", "catalog", f"file publish rejected: {exc.code}")]}
+        raise
+    svc.persist_derived_relations(adaptation["records"], tenant_id=tenant)
+    publication = {**publication, "catalog_counts": svc._catalog_counts(tenant)}
+    return {"success": True,
+            "data": {"adaptation": adaptation, "validation": report, "publishable": True,
+                     "publication": publication},
+            "errors": [], "trace_id": _trace(ctx, "data_catalog_file_publish"),
+            "evidence": [_evidence("m0", "catalog",
+                                   f"file published={publication.get('published')} duplicates={publication.get('duplicates')}")]}
+
+
+async def _facade_publish(expected_type: str, payload: dict[str, Any],
+                          ctx: dict[str, Any], tool: str) -> dict[str, Any]:
+    """v1 typed facade 公共壳：单类型闸门 + approved 发布 + 派生关系/回填/抢占。"""
+    from .m0_catalog_ingest import (
+        CatalogValidationError,
+        merge_relation_issues,
+        product_dependency_issues,
+    )
+
+    records = payload.get("records") or []
+    if not isinstance(records, list) or not records:
+        raise ValueError(f"{tool} 需要 records 数组（≥1）")
+    if len(records) > 5000:
+        raise ValueError("records 超过上限 5000")
+    mixed = [str(r.get("entity_type") or "") for r in records if isinstance(r, dict)]
+    if any(t != expected_type for t in mixed):
+        return {"success": False, "code": "ENTITY_TYPE_MISMATCH",
+                "errors": [{"code": "ENTITY_TYPE_MISMATCH",
+                            "message": f"混批拒绝：{tool} 只接受 entity_type={expected_type}",
+                            "details": []}],
+                "data": {"expected": expected_type},
+                "trace_id": _trace(ctx, tool),
+                "evidence": [_evidence("m0", "catalog", f"{tool} rejected: entity_type mismatch")]}
+    tenant = str(ctx.get("tenant_id") or "default")
+    actor = str(ctx.get("actor") or "operator")
+    svc = _catalog_svc(ctx)
+    # 产品引用 fail-closed 合并（order/bom/process_route 非可选）
+    report = svc.validate_records(records, tenant_id=tenant,
+                                  task_id=str(ctx.get("task_id") or ""), actor=actor)
+    rel = product_dependency_issues(records, tenant_id=tenant, lookup=svc._entity_lookup)
+    report = merge_relation_issues(report, rel)
+    if not report["valid"]:
+        flat = [i for r in report["records"] for i in r["issues"]]
+        if any(i["code"] == "IDEMPOTENCY_CONFLICT" for i in flat):
+            code = "IDEMPOTENCY_CONFLICT"
+        elif any(i["code"] == "UNRESOLVED_RELATION_ENDPOINT" for i in flat):
+            code = "UNRESOLVED_RELATION_ENDPOINT"
+        else:
+            code = "VALIDATION_FAILED"
+        return {"success": False, "code": code,
+                "errors": [{"code": code, "message": code, "details": []}],
+                "data": {"validation": report},
+                "trace_id": _trace(ctx, tool),
+                "evidence": [_evidence("m0", "catalog", f"{tool} rejected: {code}")]}
+    if not report["publishable"]:
+        return {"success": False, "code": "REVIEW_REQUIRED",
+                "errors": [{"code": "REVIEW_REQUIRED",
+                            "message": "facade 只发布 review_status=approved 记录", "details": []}],
+                "data": {"validation": report},
+                "trace_id": _trace(ctx, tool),
+                "evidence": [_evidence("m0", "catalog", f"{tool} rejected: review required")]}
+    try:
+        data = svc.publish_records(records, tenant_id=tenant,
+                                   task_id=str(ctx.get("task_id") or ""), actor=actor)
+    except CatalogValidationError as exc:
+        return {"success": False, "code": exc.code,
+                "errors": [{"code": exc.code, "message": str(exc), "details": []}],
+                "data": exc.report, "trace_id": _trace(ctx, tool),
+                "evidence": [_evidence("m0", "catalog", f"{tool} rejected: {exc.code}")]}
+    svc.persist_derived_relations(records, tenant_id=tenant)
+    svc.backfill_declared_relations(records, tenant_id=tenant)
+    if expected_type == "bom":
+        svc.supersede_active_boms(records, tenant_id=tenant)
+    data = {**data, "catalog_counts": svc._catalog_counts(tenant)}
+    return {"success": True, "data": data, "errors": [],
+            "trace_id": _trace(ctx, tool),
+            "evidence": [_evidence("m0", "catalog",
+                                   f"{tool} published={data.get('published')} duplicates={data.get('duplicates')}")]}
+
+
+#: v1 typed facade：工具名 → canonical entity_type（单类型闸门）。
+FACADE_KINDS: dict[str, str] = {
+    "m0_products_import": "product",
+    "m0_orders_import": "order",
+    "m0_boms_import": "bom",
+    "m0_materials_import": "material",
+    "m0_suppliers_import": "supplier",
+    "m0_equipment_import": "equipment",
+    "m0_routes_import": "process_route",
+    "m0_operations_import": "operation",
+    "m0_tooling_import": "tooling",
+}
+
+
+def _facade_handler(tool: str, expected_type: str):
+    async def handler(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+        return await _facade_publish(expected_type, payload, ctx, tool)
+    handler.__name__ = tool
+    return handler
+
+
+FACADE_HANDLERS: dict[str, Any] = {
+    tool: _facade_handler(tool, etype) for tool, etype in FACADE_KINDS.items()
+}
 
 
 async def m1_parse(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
@@ -785,6 +1316,34 @@ HANDLERS = {
     "data_import_preview": m0_preview,
     "data_import_resolve": m0_resolve,
     "data_import_commit": m0_commit,
+    # ── M0 数据基础其余 23 个工具（S1 迁移；契约见 registry-manifests/m0.json）──
+    # canonical 批次面（需 YUNPAI_M0_DB；未配置时 fail-closed，不伪造成功）
+    "data_import_rollback": m0_rollback,
+    "data_import_history": m0_history,
+    "data_import_quarantine": m0_quarantine_list,
+    # catalog 语义层（m0.ingest.v1 校验 / 发布 / 文档候选 / 模板文件）
+    "data_catalog_ingest_validate": catalog_ingest_validate,
+    "data_catalog_ingest_publish": catalog_ingest_publish,
+    "data_catalog_document_candidate_validate": catalog_document_candidate_validate,
+    "data_catalog_document_candidate_publish": catalog_document_candidate_publish,
+    "data_catalog_file_validate": catalog_file_validate,
+    "data_catalog_file_publish": catalog_file_publish,
+    # typed facade（单类型闸门 + 派生关系/回填/BOM 抢占）
+    "m0_products_import": FACADE_HANDLERS["m0_products_import"],
+    "m0_orders_import": FACADE_HANDLERS["m0_orders_import"],
+    "m0_boms_import": FACADE_HANDLERS["m0_boms_import"],
+    "m0_materials_import": FACADE_HANDLERS["m0_materials_import"],
+    "m0_suppliers_import": FACADE_HANDLERS["m0_suppliers_import"],
+    "m0_equipment_import": FACADE_HANDLERS["m0_equipment_import"],
+    "m0_routes_import": FACADE_HANDLERS["m0_routes_import"],
+    "m0_operations_import": FACADE_HANDLERS["m0_operations_import"],
+    "m0_tooling_import": FACADE_HANDLERS["m0_tooling_import"],
+    # canonical 读面（进程内 m0_facts，需 YUNPAI_M0_DB）
+    "get_m0_product_overview": m0_product_overview,
+    "get_m0_product_graph": m0_product_graph,
+    "list_m0_documents": m0_read_documents,
+    "list_m0_inventory": m0_read_inventory,
+    "list_m0_entities": m0_read_entities,
     "ingest_document": m1_parse,
     "run_bom_sop_workflow": m2_bom,
     "run_m3_procurement_requirements": m3_mrp,
