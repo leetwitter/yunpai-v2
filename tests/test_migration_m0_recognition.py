@@ -3,11 +3,16 @@
 rows-S0 判定：V2 `test_review_rules_gates.py` 无 `ingest_canonical` 用例，
 `test_canonical_ingest.py:80-84` 只直调 `registry.call`，**无端到端门断言**。
 本文件用 LangGraph 真实跑一遍：候选落库 → 开 candidate 门 → resume approve/reject。
+
+另含 rows-S1 的 `data_import_run` candidate 门回归：**门批准即落地候选裁决**
+（`_apply_candidate_approval`），否则 `data_import_commit` 会 PENDING_REVIEW 死锁（W913）。
 """
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -132,3 +137,52 @@ def test_ingest_canonical_gate_requires_m0_reviewer_role(canonical_db):
     value = getattr(info, "value", info)
     assert value.get("type") == "gate_invalid"
     assert "m0-reviewer" in str(value.get("error"))
+
+
+def test_candidate_gate_approval_resolves_batch_candidates(tmp_path, monkeypatch):
+    """W913 死锁修复：`data_import_run` candidate 门批准 → 批次候选落为 approved。"""
+    monkeypatch.setenv("YUNPAI_M0_SANDBOX_DB", str(tmp_path / "sandbox.sqlite"))
+    monkeypatch.delenv("YUNPAI_M0_DB", raising=False)
+    monkeypatch.delenv("M0_URL", raising=False)
+
+    record = {
+        "schema_version": "m0.ingest.v1", "tenant_id": "default",
+        "idempotency_key": "idem-material-M-GATE-2",
+        "source": {"system": "m0-migration-test", "external_id": "ext-1",
+                   "sha256": hashlib.sha256(b"M-GATE-2").hexdigest()},
+        "entity_type": "material", "identity": {"business_key": "M-GATE-2"},
+        "payload": {"name": "候选物料", "unit": "PCS"},
+        "evidence": [{"key": "ev-1", "ref": "test:1"}],
+        "review_status": "approved", "reviewed_by": "tester",
+    }
+    files = [{"kind": "order", "filename": "material.json",
+              "content_b64": base64.b64encode(json.dumps(record, ensure_ascii=False).encode()).decode()}]
+
+    graph = build_graph(_deps(), checkpointer=MemorySaver())
+    # 装配走 bridge：data_import_run 的 files 来自 request.attachments(kind=order)
+    state = new_state_v2({"message": "导入物料", "tools": ["data_import_run"],
+                          "attachments": files})
+    config = {"configurable": {"thread_id": state["thread_id"]}, "recursion_limit": 48}
+
+    out = asyncio.run(graph.ainvoke(state, config))
+    gate = getattr(out["__interrupt__"][0], "value", out["__interrupt__"][0])["gate"]
+    assert gate["type"] == "candidate" and gate["tool"] == "data_import_run"
+    batch_id = out["outputs"]["data_import_run"]["batch_id"]
+
+    from yunpai_orchestrator.workers import _m0_store
+
+    assert _m0_store({}).pending_count(batch_id) == 1, "批准前候选应处于待裁决"
+
+    resumed = asyncio.run(graph.ainvoke(
+        Command(resume={"decision": "approve", "actor": "steward", "roles": ["m0-reviewer"]}),
+        config))
+    assert resumed["status"] == "completed"
+    approval = resumed["outputs"]["data_import_run"]["candidate_approval"]
+    assert approval["resolved"] == 1 and approval["actor"] == "steward"
+    # 死锁解除：pending 归零 → commit 不再 PENDING_REVIEW
+    assert _m0_store({}).pending_count(batch_id) == 0
+    from yunpai_orchestrator.workers import m0_commit
+
+    commit = asyncio.run(m0_commit({"batch_id": batch_id, "require_resolved": True},
+                                   {"task_id": "TASK-M0-MIG", "actor": "steward"}))
+    assert commit["status"] == "fixture_recorded"  # sandbox 无 canonical 表 → 只记录意图

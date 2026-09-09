@@ -185,6 +185,54 @@ def _stamp_engineering_approval(state: dict[str, Any], gate: dict[str, Any]) -> 
     return outputs
 
 
+def _apply_candidate_approval(state: dict[str, Any], gate: dict[str, Any], *, actor: str) -> dict[str, Any] | None:
+    """M0 candidate 门批准的副作用：把该批次未裁决候选落为 approved（人工裁决落地）。
+
+    与 INT `graph.py:646-670` 同语义：候选门批准就是人工裁决结论，若不落地，
+    下游 `data_import_commit` 会因 PENDING_REVIEW 死锁（W913 基线实测）。
+    只对 `data_import_run` 生效（批次候选面）；`ingest_canonical` / facade / resolve /
+    rollback 的 candidate 门只记录批准，不改写已发布事实。
+    """
+    if str(gate.get("type")) != "candidate" or str(gate.get("tool") or "") != "data_import_run":
+        return None
+    outputs = dict(state.get("outputs") or {})
+    envelope = outputs.get("data_import_run")
+    if not isinstance(envelope, dict):
+        return None
+    data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
+    batch_id = str(envelope.get("batch_id") or envelope.get("id")
+                   or data.get("batch_id") or data.get("id") or "")
+    if not batch_id:
+        return None
+    import os
+
+    try:
+        db_path = os.getenv("YUNPAI_M0_DB")
+        if db_path:
+            from .m0_import_store import CanonicalImportStore
+
+            store = CanonicalImportStore(db_path)
+        else:
+            from .m0_sandbox import M0SandboxStore
+
+            store = M0SandboxStore(os.getenv("YUNPAI_M0_SANDBOX_DB") or "runtime/yunpai-m0-sandbox.sqlite")
+        resolved = 0
+        for doc in (store.preview(batch_id).get("documents") or []):
+            if str(doc.get("review_status") or "") in ("approved", "rejected", "published"):
+                continue
+            store.resolve(batch_id=batch_id, candidate_id=doc.get("candidate_id"),
+                          action="approve", actor=actor)
+            resolved += 1
+    except Exception:  # noqa: BLE001 —— 本地无该批次时保持批准结论，不击穿图
+        return None
+    if not resolved:
+        return None
+    stamped = dict(envelope)
+    stamped["candidate_approval"] = {"batch_id": batch_id, "resolved": resolved, "actor": actor}
+    outputs["data_import_run"] = stamped
+    return outputs
+
+
 def reviewer_check_node(deps: GraphDeps) -> Callable:
     async def _node(state: RunStateV2) -> dict[str, Any]:
         engine = deps.engine
@@ -250,6 +298,11 @@ def reviewer_check_node(deps: GraphDeps) -> Callable:
                 stamped = _stamp_engineering_approval(state, gate)
                 if stamped is not None:
                     updates["outputs"] = stamped
+                # M0 candidate 门批准 → 该批次未裁决候选落为 approved（解 commit 死锁）
+                candidate_stamped = _apply_candidate_approval(
+                    state, gate, actor=str((decision or {}).get("actor") or "operator"))
+                if candidate_stamped is not None:
+                    updates["outputs"] = candidate_stamped
                 return updates
             if normalized == "reject":
                 plan = engine.mark(plan, step_id, "skipped")
