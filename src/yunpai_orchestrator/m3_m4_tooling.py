@@ -230,7 +230,9 @@ M4_ADAPTER_TOOL_NAMES = (
     "approve_m4_purchase_order",
     "request_changes_m4_purchase_order",
     "generate_m4_purchase_inquiry_message",
-    "send_m4_purchase_order",
+    # ``send_m4_purchase_order`` 不在 HTTP 适配器名单（P0-5）：manifest 声明
+    # ``local_only=true`` + ``remote_invocation=forbidden``，registry 拒绝远程绑定/调用，
+    # 只保留本地 legacy handler（无 TaskID 的旧 PO 记录出站，不实际发送）。
     "create_m4_supplier_reply",
     "parse_m4_supplier_reply",
     "confirm_m4_supplier_reply",
@@ -301,7 +303,8 @@ M4_SKILL_OPERATION_MAP = {
     "approve": "approve_m4_purchase_order",
     "request_changes": "request_changes_m4_purchase_order",
     "inquiry": "generate_m4_purchase_inquiry_message",
-    "send": "send_m4_purchase_order",
+    # ``send`` 已摘除（P0-5）：send_m4_purchase_order 是 local_only/remote_invocation=forbidden
+    # 的 legacy 兼容面，不得作为 Skill 出口暴露；唯一合法发送出口 = generate_m4_purchase_inquiry_message。
     "create_reply": "create_m4_supplier_reply",
     "parse_reply": "parse_m4_supplier_reply",
     "supplier_reply": "parse_m4_supplier_reply",
@@ -326,7 +329,9 @@ M4_READ_ONLY_SKILL_OPERATIONS = frozenset({
     "suppliers",
     "tracking",
     "alerts",
-    "supply",
+    # ``supply``（query_m4_material_supply_snapshot）已摘除（P0-1）：该「查询」会惰性
+    # 持久化供应快照（m4_tracking_local.query_m4_material_supply_snapshot），属写操作，
+    # 不得列入只读白名单绕过授权门。
     "supply_events",
     "supply_snapshot",
 })

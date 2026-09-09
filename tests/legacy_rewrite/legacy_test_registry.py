@@ -109,5 +109,7 @@ def test_http_runtime_can_keep_m4_business_tools_local(monkeypatch):
     monkeypatch.setenv("YUNPAI_LOCAL_M4", "true")
     registry = build_runtime_registry()
     handler = registry.handlers["import_m4_purchase_suggestions_json"]
-    assert handler.__module__.endswith("workers")
+    # M4 本地实现已由 workers.m4_purchase（旧 echo）替换为 m4_purchase_local
+    # （rows-S5.md:67 改造后搬）；断言口径 = 「仍是本地 handler，未被 HTTP 覆盖」。
+    assert handler.__module__.endswith(("workers", "m4_purchase_local"))
     assert registry.environment["local_modules"] == ["m4"]

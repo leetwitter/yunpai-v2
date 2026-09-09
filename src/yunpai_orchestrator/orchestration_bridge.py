@@ -1159,12 +1159,22 @@ def bridge_payload(state: RunState, tool: str) -> dict[str, Any]:
                            missing_fields=["supplier_by_material(权威供应商主数据)"],
                            required_tool="list_m4_suppliers",
                            recovery="缺少权威供应商映射；请提供 M4 供应商主数据后重试")
+        # S3 整合（R049）：幂等键随交接载荷内容派生（供应商解析/补料变化 → 新键），
+        # 与 M4 受控导入「同 (task,key) 同正文 replay / 异正文 conflict」契约对齐：
+        # 主链先建批次后经 procurement gate 补供应商重跑时，载荷升级走新批次草稿
+        # （旧草稿保留、未发布），不再触发 IDEMPOTENCY_CONFLICT 死锁。
+        import hashlib as _hashlib
+        import json as _json
+
+        content_digest = _hashlib.sha256(
+            _json.dumps(suggestions, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[:12]
         return {
             "suggestions": suggestions,
             "tenant_id": state.get("tenant_id", "default"),
             "site_id": str(request.get("site_id") or "default"),
             "tracking_task_id": state.get("task_id", ""),
-            "idempotency_key": f"{state.get('task_id', 'task')}:m4",
+            "idempotency_key": f"{state.get('task_id', 'task')}:m4:{content_digest}",
             "source_module": "m3",
             "procurement_plan_id": str(m3.get("procurement_plan_id") or ""),
             "order_id": str(m3.get("order_id") or ""),

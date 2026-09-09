@@ -96,6 +96,11 @@ class ToolSpec:
     tool_type: str = "tool"
     agent_endpoints: dict[str, Any] = field(default_factory=dict)
     tags: tuple[str, ...] = field(default_factory=tuple)
+    #: 契约层「只能本地执行」声明（manifest 顶层键，P0-5）：
+    #: ``local_only=true`` 或 ``remote_invocation="forbidden"`` → registry 拒绝远程绑定/调用。
+    local_only: bool = False
+    remote_invocation: str = ""
+    remote_invocation_reason: str = ""
     capability: str = ""
     side_effect: str = "none"
     review_gate: str = ""

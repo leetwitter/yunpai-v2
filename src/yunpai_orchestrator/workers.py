@@ -549,23 +549,6 @@ async def m3_mrp(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]
     return {"success": True, "data": data, "errors": [], "trace_id": _trace(ctx, "m3"), "evidence": [_evidence("m3", "inventory_snapshot", "固定库存快照计算")]}
 
 
-async def m4_purchase(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    suggestions = payload["suggestions"]
-    digest = sha256(json.dumps(suggestions, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-    return {
-        "id": int(digest[:8], 16), "filename": "orchestrator-json", "total_rows": len(suggestions),
-        "valid_rows": len(suggestions), "invalid_rows": 0, "duplicate_rows": 0,
-        "status": "needs_review" if suggestions else "not_required",
-        "tenant_id": payload.get("tenant_id"), "site_id": payload.get("site_id"),
-        "tracking_task_id": payload.get("tracking_task_id") or ctx.get("task_id"),
-        "idempotency_key": payload.get("idempotency_key"), "source_plan_id": payload.get("procurement_plan_id"),
-        "source_plan_version": payload.get("procurement_plan_version_id"),
-        "source_plan_checksum": payload.get("source_plan_checksum"), "source_order_id": payload.get("order_id"),
-        "payload_digest": digest, "items": suggestions, "suggestions": suggestions,
-        "evidence": [_evidence("m4", "m3.shortage_lines", "M3 到 M4 受控桥接")],
-    }
-
-
 async def m5_schedule(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     # Explicit WIP/v2 facts are handled by the frozen constrained scheduler.
     # The legacy branch remains available only for explicitly preview/sandbox
@@ -756,6 +739,21 @@ def _m3(name: str):
     return LOCAL_HANDLERS[name]
 
 
+def _m4(name: str):
+    """Lazily import the local M4 handler for a manifest tool name.
+
+    M4 的本地实现分三个文件（采购 / 供应商 / 跟踪），统一在本工厂里合并查找；
+    名字写错 → ``KeyError`` 在导入期就炸，而不是运行时静默 UNBOUND。
+    """
+    from .m4_purchase_local import LOCAL_HANDLERS as PURCHASE
+    from .m4_supplier_local import LOCAL_HANDLERS as SUPPLIER
+    from .m4_tracking_local import LOCAL_HANDLERS as TRACKING
+    handler = {**PURCHASE, **SUPPLIER, **TRACKING}.get(name)
+    if handler is None:
+        raise KeyError(f"M4 local handler not found: {name}")
+    return handler
+
+
 async def sample_file(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     """确定性采样：把文件压成 LLM 可看的表头 + 前 N 行样本，不伪造内容。"""
     from .recognized_store import sample_file as _sample
@@ -900,7 +898,35 @@ HANDLERS = {
     "run_m3_procurement_requirements": m3_mrp,
     # M3 正式齐套快照（本地实现；契约见 registry-manifests/m3.json）
     "get_material_readiness_snapshot": _m3("get_material_readiness_snapshot"),
-    "import_m4_purchase_suggestions_json": m4_purchase,
+    # ── M4 采购 / 供应商 / 跟踪（本地实现；契约见 registry-manifests/m4.json）──
+    # 逐工具结论见 _migration/rows-S5.md（直接搬 22 / 改造后搬 2 / 废弃 1 / 不搬 1）。
+    # 未登记：import_m4_purchase_suggestions（CSV，废弃不搬）与
+    # receive_m4_schedule_impact_proposal（ORCHESTRATION_INTERNAL，不得进 HANDLERS）。
+    "import_m4_purchase_suggestions_json": _m4("import_m4_purchase_suggestions_json"),
+    "list_m4_purchase_suggestions": _m4("list_m4_purchase_suggestions"),
+    "generate_m4_purchase_orders": _m4("generate_m4_purchase_orders"),
+    "list_m4_purchase_orders": _m4("list_m4_purchase_orders"),
+    "get_m4_purchase_order": _m4("get_m4_purchase_order"),
+    "submit_m4_purchase_order_review": _m4("submit_m4_purchase_order_review"),
+    "approve_m4_purchase_order": _m4("approve_m4_purchase_order"),
+    "request_changes_m4_purchase_order": _m4("request_changes_m4_purchase_order"),
+    "generate_m4_purchase_inquiry_message": _m4("generate_m4_purchase_inquiry_message"),
+    # local_only + remote_invocation=forbidden（P0-5）：registry 永不为其安装 HTTP 适配器。
+    "send_m4_purchase_order": _m4("send_m4_purchase_order"),
+    "list_m4_suppliers": _m4("list_m4_suppliers"),
+    "create_m4_supplier": _m4("create_m4_supplier"),
+    "update_m4_supplier": _m4("update_m4_supplier"),
+    "create_m4_supplier_reply": _m4("create_m4_supplier_reply"),
+    "parse_m4_supplier_reply": _m4("parse_m4_supplier_reply"),
+    "confirm_m4_supplier_reply": _m4("confirm_m4_supplier_reply"),
+    "confirm_m4_supplier_fact": _m4("confirm_m4_supplier_fact"),
+    "list_m4_tracking": _m4("list_m4_tracking"),
+    "scan_m4_purchase_alerts": _m4("scan_m4_purchase_alerts"),
+    "list_m4_purchase_alerts": _m4("list_m4_purchase_alerts"),
+    "generate_m4_urge_message": _m4("generate_m4_urge_message"),
+    "query_m4_material_supply_snapshot": _m4("query_m4_material_supply_snapshot"),
+    "list_m4_material_supply_events": _m4("list_m4_material_supply_events"),
+    "get_m4_material_supply_snapshot": _m4("get_m4_material_supply_snapshot"),
     "solve_scheduling": m5_schedule,
     # M5 PMC v2 tool handlers (Taskbook Tasks 3-5); the two excluded tools
     # (report_workload, bind_worker_to_order) intentionally stay unbound.

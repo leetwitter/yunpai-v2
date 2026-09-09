@@ -31,7 +31,10 @@ ORCHESTRATION_INTERNAL: frozenset[str] = frozenset({
 })
 
 #: 本地假实现明示（联调可用，生产环境从目录剔除）。
-SANDBOX_TOOLS: frozenset[str] = frozenset({"import_m4_purchase_suggestions_json"})
+#: M4 施工后为空：``import_m4_purchase_suggestions_json`` 已由旧 echo 假实现替换为
+#: ``m4_purchase_local.import_m4_purchase_suggestions_json`` 真实实现（落库 + 幂等 409 +
+#: tenant 归属），按 rows-S5.md:67 回归 BOUND_LOCAL（P0）。
+SANDBOX_TOOLS: frozenset[str] = frozenset()
 
 #: 默认不进路由目录（书二 §7.3 ○：审批类写动作只由人工/编排显式调用，不得被 LLM 提案）。
 #: 注意：这些工具**仍是已绑定**（绑定态照实报 BOUND_HTTP），只是不出现在路由目录里。
