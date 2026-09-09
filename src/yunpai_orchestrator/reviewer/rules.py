@@ -213,6 +213,30 @@ RULES: dict[str, list[Check]] = {
               reason="查询即惰性持久化供应快照（写操作，非只读）；必须人工授权（P0-1："
                      "已从 M4_READ_ONLY_SKILL_OPERATIONS 摘除）"),
     ],
+    # ── M1 写类工具（rows-S2「审查需补」4 条）───────────────────────────────
+    # 旧系统用 m1_tooling.M1_WRITE_SKILL_OPERATIONS + agents.py preflight 做
+    # 「执行前授权门」；V2 只有执行后审查（graph.py:205-209 是唯一开门点），且这
+    # 4 个工具在 registry-manifests/m1.json 里没有 review_gate 声明（名字不含
+    # approve/commit/dispatch/write/send/publish → registry.py:55-62 判
+    # side_effect=none → review_gate=none），实测在 V2 **完全无门**。按父会话 R8
+    # 裁决：本轮不恢复执行前门，补后置等价门（authorization）+ manifest 契约声明，
+    # 「写发生在批准之前」的语义差异登记在 REPORT-MIG-M1.md「已知缺口」。
+    "ingest_m1_archive": [
+        Check("status", "ne", "failed", action="gate:authorization",
+              reason="M1 归档解包与子任务解析落库（写）须人工授权确认"),
+    ],
+    "submit_m1_review": [
+        Check("status", "eq", "done", action="gate:authorization",
+              reason="M1 人工审核通过落库（approve→done，写）须授权留痕，禁止 LLM 置信度放行"),
+    ],
+    "generate_m1_report": [
+        Check("report_status", "truthy", action="gate:authorization",
+              reason="M1 识别报告生成与缓存写入（写）须人工授权确认"),
+    ],
+    "export_m1_order": [
+        Check("data.generated", "eq", True, action="gate:authorization",
+              reason="M1 订单 Excel 导出落盘（写：文件 + download_url）须人工授权确认"),
+    ],
 }
 
 #: M0 canonical 写工具（rows-S1「审查需补」）：成功即开 candidate 门。

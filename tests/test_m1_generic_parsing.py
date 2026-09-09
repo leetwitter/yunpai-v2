@@ -38,6 +38,13 @@ from yunpai_orchestrator.workers import m1_parse
 from m1_fake_http import BASE, Backend, install
 from test_order_semantics import inventory_like_bytes, real_order_twin_bytes
 
+
+@pytest.fixture(autouse=True)
+def _isolated_m1_db(tmp_path, monkeypatch):
+    """本地 handler 已真实落库（``m1_domain.M1Store``，rows-S2 第 1 行）：测试用
+    临时库隔离，避免污染 ``runtime/yunpai-m1.sqlite`` 与跨用例串行污染。"""
+    monkeypatch.setenv("YUNPAI_M1_DB", str(tmp_path / "m1.sqlite"))
+
 ORDER_NO = "WX20260905001"  # 虚构值（真实样本订单号不进入仓库）
 CUSTOMER = "测试客户A"
 
@@ -373,7 +380,7 @@ async def test_local_ingest_tool_consistent_across_filenames_and_tenants():
         result = await registry.call(
             "ingest_document", _file_payload(raw, filename), {"task_id": "T-1", "tenant_id": tenant}
         )
-        assert result["provider"] == "local_fixture"
+        assert result["provider"] == "local"  # 真实本地解析（provider=local，见 rows-S2 第 1 行）
         assert result["status"] == "needs_review"  # 缺编码/交期 -> review，不空成功
         assert result["needs_review"] is True
         document = result["document"]

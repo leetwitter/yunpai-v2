@@ -284,6 +284,8 @@
           "async": {"type": "boolean"}
         }
       },
+      "side_effect": "local_write",
+      "review_gate": "authorization",
       "execution": "sync"
     },
     {
@@ -709,6 +711,8 @@
           "generated": {"type": "boolean"}
         }
       },
+      "side_effect": "local_write",
+      "review_gate": "authorization",
       "execution": "sync"
     },
     {
@@ -931,6 +935,8 @@
           "scored_result": {"type": "object"}
         }
       },
+      "side_effect": "local_write",
+      "review_gate": "authorization",
       "execution": "sync"
     },
     {
@@ -958,6 +964,8 @@
           "message": {"type": "string"}
         }
       },
+      "side_effect": "local_write",
+      "review_gate": "authorization",
       "execution": "sync"
     },
     {

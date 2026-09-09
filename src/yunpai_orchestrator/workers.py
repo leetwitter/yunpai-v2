@@ -763,144 +763,518 @@ FACADE_HANDLERS: dict[str, Any] = {
 
 
 async def m1_parse(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    """Local-compat M1 handler (fixture/preview only, never production).
+    """ingest_document（S2 M1-1 真实化）：确定性解析 → m1.document.v2 任务持久化。
 
-    This handler intentionally does NOT implement the full multi-format M1
-    parsing the manifest describes (PDF/image/DOCX/CAD/archive + MinerU/
-    Instructor extraction, TaskStore, review queue, knowledge projections).
-    It understands JSON, a pre-parsed ``_fixture_document`` structure, and —
-    for XLSX/XLSM order spreadsheets — the deterministic order parser shared
-    with ``business_catalog``/M1 HTTP supplement (``order_semantics``).  All
-    other content fails closed with an explicit code so a fixture success is
-    never mistaken for a complete M1 parse; in production transport
-    (``YUNPAI_TOOL_TRANSPORT=http``) this handler is replaced by the dedicated
-    M1 HTTP adapter pointing at the real service.
+    迁自 `_wt/INT/src/yunpai_langgraph/workers.py:764-785`（rows-S2 第 1 行
+    「改造后搬」）。V2 原实现是 ``provider="local_fixture"/fixture=True`` 的
+    preview 版（无任务持久化，docstring 自述 never production），按 rows-S2
+    备注「替换 V2 现有 fixture 版」换成 ``m1_domain.process_upload_file``：
+
+    - 本地 M1 领域库（``m1_domain.M1Store``，``YUNPAI_M1_DB``）任务状态机
+      created→parsing→…→needs_review|done|failed；
+    - JSON/含订单证据的 XLSX/XLSM 直通；自由格式（PDF/图片/工程图/其它）显式
+      失败（C 型缺模型不伪造），失败码保持 ``LOCAL_FIXTURE_UNSUPPORTED_FORMAT``；
+    - ``provider``：真实解析="local"；``_fixture_document`` 注入路径（测试便利）
+      ="local_fixture"/``fixture=True``；
+    - 契约声明的 3 个入参（``doc_type_hint``/``document_subtype_hint``/
+      ``semantic_enrichment``）真正生效（rows-S2 盘点第 6 类，R2 已在
+      ``m1_domain`` 实现）。
     """
-    from .order_semantics import sniff_xlsx_bytes, workbook_parse_candidate
+    from .m1_domain import process_upload_file
 
     filename, raw = _decode_file(payload["file"])
-    fixture = payload.get("_fixture_document")
-    parsed_source: dict[str, Any] = {}
-    parser_meta: dict[str, Any] = {}
-    # 只按字节结构 + 表头/价格证据决定是否本地确定性解析 XLSX/XLSM，不依赖
-    # 文件名/路径/租户；解析器给出的证据（parser 版本、sheet/行/列坐标、
-    # 原值/归一化值、缺失字段）原样带出；非订单表格（库存/设备/无证据）仍失败关闭。
-    candidate = workbook_parse_candidate(filename, raw)
-    if candidate is not None:
-        parsed_source = candidate.get("document") or {}
-        parser_meta = {
-            "name": str(candidate.get("parser_name") or "order.parser.v2"),
-            "version": str(candidate.get("parser_version") or "order.parser.v2"),
-            "revision": str(candidate.get("parser_version") or "order.parser.v2"),
-        }
-    elif sniff_xlsx_bytes(raw):
-        # v2 无订单证据时，老式坐标模板（P6/X7/第 10 行起等固定布局）由坐标解析
-        # 兜底——同样只按内容，不伪造事实；无任何事实则失败关闭。
-        try:
-            from .order_workbook import parse_order_workbook
+    result = process_upload_file(
+        filename=filename, raw=raw,
+        tenant_id=str(ctx.get("tenant_id") or "default"),
+        tracking_task_id=str(ctx.get("task_id") or "task"),
+        fixture=payload.get("_fixture_document"),
+        doc_type_hint=payload.get("doc_type_hint"),
+        document_subtype_hint=payload.get("document_subtype_hint"),
+        semantic_enrichment=bool(payload.get("semantic_enrichment", True)))
+    return {**result, "trace_id": _trace(ctx, "ingest_document")}
 
-            legacy = parse_order_workbook(filename, raw)
-            if legacy.get("order_id") or legacy.get("lines"):
-                parsed_source = legacy
-                parser_meta = {
-                    "name": "order.workbook.coordinates.v1",
-                    "version": "order.workbook.coordinates.v1",
-                    "revision": "order.workbook.coordinates.v1",
-                }
-        except Exception:
-            parsed_source = {}
-    if not parsed_source and isinstance(fixture, dict) and fixture:
-        parsed_source = fixture
-    if not parsed_source:
-        parsed_source = _json_content(raw)
-    if not parsed_source:
-        return {
-            "task_id": f"m1-{ctx['task_id'][-10:]}",
-            "status": "failed",
-            "code": "LOCAL_FIXTURE_UNSUPPORTED_FORMAT",
-            "message": "本地 fixture handler 无法解析该文件（仅支持 JSON、预解析结构或含订单结构证据的 XLSX/XLSM；不冒充完整 M1 多格式解析）。生产解析请通过 M1_URL 调用真实 M1 服务。",
-            "provider": "local_fixture",
-            "fixture": True,
-            "document": None,
-            "document_schema_version": None,
-            "schema_version": None,
-            "needs_review": False,
-            "overall_confidence": 0.0,
-        }
-    lines = parsed_source.get("lines") or parsed_source.get("records") or []
-    confidence = float(parsed_source.get("confidence", 1.0 if lines else 0.0))
-    source_issues = parsed_source.get("validation_issues") if isinstance(parsed_source.get("validation_issues"), list) else []
-    header = {
-        "order_id": parsed_source.get("order_id"), "product_code": parsed_source.get("product_code"),
-        "quantity": parsed_source.get("quantity"), "due_date": parsed_source.get("due_date"),
-    }
-    missing = [key for key, value in header.items() if value in (None, "")]
-    order_prefix = str(parsed_source.get("order_id") or "order")
 
-    def _stable_line_id(line: dict[str, Any], index: int) -> str:
-        existing = line.get("line_id")
-        if isinstance(existing, str) and existing.strip():
-            return existing.strip()
-        sheet = line.get("sheet")
-        row = line.get("row")
-        if sheet is not None and row is not None:
-            return f"{order_prefix}::{sheet}!R{row}"
-        return f"{order_prefix}::L{index:02d}"
+async def m1_archive_ingest(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """ingest_m1_archive（M1-1）：安全解包 → 每个叶子文件建子任务并解析。
 
-    normalized_lines: list[dict[str, Any]] = []
-    for index, line in enumerate(lines, start=1):
-        if not isinstance(line, dict):
-            continue
-        normalized = dict(line)
-        normalized["line_id"] = _stable_line_id(normalized, index)
-        # 契约需要的 display 字段：model/name_raw 与 product_code/name 对齐，
-        # 保持缺失为 None，不伪造编码。
-        if "model" not in normalized:
-            normalized["model"] = normalized.get("product_code")
-        if "name_raw" not in normalized and normalized.get("product_name") is not None:
-            normalized["name_raw"] = normalized.get("product_name")
-        normalized_lines.append(normalized)
-    lines = normalized_lines
-    totals: dict[str, Any] = {}
-    total_quantity = parsed_source.get("total_quantity")
-    if total_quantity is None:
-        total_quantity = parsed_source.get("quantity")
-    if total_quantity is not None:
-        totals["quantity"] = total_quantity
-    if parsed_source.get("total_amount") is not None:
-        totals["amount"] = parsed_source.get("total_amount")
-    document = {
-        "schema_version": "m1.document.v2",
-        "source": {"original_filename": filename, "sha256": sha256(raw).hexdigest()},
-        "document_type": "order", "document_subtype": "customer_order",
-        "header": header, "lines": lines, "totals": totals, "field_meta": {},
-        "validation_issues": [*source_issues, *({"code": "MISSING_FIELD", "message": f"缺少字段: {key}", "paths": [f"$.header.{key}"]} for key in missing)],
-    }
-    field_evidence = parsed_source.get("field_evidence")
-    if isinstance(field_evidence, list) and field_evidence:
-        document["field_evidence"] = field_evidence
-    sheet_docs = parsed_source.get("sheet_docs")
-    if isinstance(sheet_docs, list) and sheet_docs:
-        document["sheet_docs"] = sheet_docs
-    if parser_meta:
-        document["parser_name"] = parser_meta["name"]
-        document["parser_version"] = parser_meta["version"]
-    validation_issues = document["validation_issues"]
-    needs_review = confidence < 0.8 or bool(validation_issues)
-    parser_detail = "order_semantics/" + parser_meta["version"] if parser_meta else "fixture"
+    迁自 `_wt/INT/.../workers.py:788-846`（rows-S2 第 2 行）。依赖
+    ``archive_extract``（V2 已有且与 INT 逐字节相同）＋ ``m1_domain``。
+    契约的 3 个可选参数由子文件继承（R2-2）。
+    """
+    import tempfile
+    from pathlib import Path
+
+    from .archive_extract import extract_archive_safe, unpack_archive
+    from .m1_domain import M1Store, process_upload_file
+
+    filename, raw = _decode_file(payload["file"])
+    store = M1Store()
+    tenant = str(ctx.get("tenant_id") or "default")
+    tracking = str(ctx.get("task_id") or "task")
+    unpacked = unpack_archive(raw, filename=filename)
+    parent = store.create_task(tenant_id=tenant, tracking_task_id=tracking,
+                               kind="archive", filename=filename,
+                               sha256_digest=_sha256_digest(raw))
+    if unpacked.get("error"):
+        store.update(tenant, parent["task_id"], status="failed", stage="failed",
+                     error=unpacked["error"])
+        return {"task_id": parent["task_id"], "status": "failed",
+                "code": "ARCHIVE_UNSUPPORTED", "message": unpacked["error"],
+                "child_count": 0, "child_ids": [], "provider": "local",
+                "fixture": False, "environment": "local_m1",
+                "trace_id": _trace(ctx, "ingest_m1_archive")}
+    child_ids: list[str] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = Path(tmp) / "members"
+        extract_archive_safe(raw, dest)
+        for member in unpacked.get("members") or []:
+            if member.get("status") != "accepted" or member.get("is_dir"):
+                continue
+            rel = str(member.get("relative_path") or "")
+            member_path = dest / rel.replace("\\", "/")
+            if not member_path.is_file():
+                continue
+            child_raw = member_path.read_bytes()
+            # 子文件继承与 m1_parse 相同的 3 个契约参数
+            result = process_upload_file(
+                filename=rel, raw=child_raw, tenant_id=tenant,
+                tracking_task_id=tracking, parent_id=parent["task_id"], kind="child",
+                doc_type_hint=payload.get("doc_type_hint"),
+                document_subtype_hint=payload.get("document_subtype_hint"),
+                semantic_enrichment=bool(payload.get("semantic_enrichment", True)))
+            child_ids.append(result["task_id"])
+    summary = store.batch_summary(tenant, parent["task_id"])
+    if summary["failed_count"] and summary["done_count"] == 0 and summary["review_count"] == 0:
+        parent_status = "failed"
+    else:
+        parent_status = "done"
+    store.update(tenant, parent["task_id"], status=parent_status, stage="complete",
+                 confidence=float(len(child_ids)) and 1.0)
     return {
-        "task_id": f"m1-{ctx['task_id'][-10:]}", "status": "needs_review" if needs_review else "done",
-        "processing_stage": "review" if needs_review else "complete",
-        "schema_version": "m1.document.v2", "document_schema_version": "m1.document.v2",
-        "document_subtype": "customer_order", "needs_review": needs_review,
-        "overall_confidence": confidence, "document": document,
-        "extraction": {"order": header, "lines": lines},
-        "order": header, "lines": lines, "missing": missing,
-        "parser": parser_meta or None,
-        "provider": "local_fixture",
-        "fixture": True,
-        "evidence": [_evidence("m1", filename, f"m1.document.v2 字段证据（本地 fixture {parser_detail}，非生产解析）")],
+        "task_id": parent["task_id"], "status": parent_status,
+        "child_count": summary["child_count"], "child_ids": child_ids,
+        "done_count": summary["done_count"], "failed_count": summary["failed_count"],
+        "review_count": summary["review_count"], "pending_count": summary["pending_count"],
+        "provider": "local", "fixture": False, "environment": "local_m1",
+        "trace_id": _trace(ctx, "ingest_m1_archive"),
     }
+
+
+async def m1_task_get(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """get_m1_task：任务摘要 + 终态文档（轮询语义）。
+
+    迁自 `_wt/INT/.../workers.py:849-868`（rows-S2 第 3 行）。manifest 的
+    ``output_schema`` 要求 ``task_id``/``status`` 在**顶层**（required），旧的
+    ``{"success":…, "data":{…}}`` 信封会让 ``registry.call`` 的输出校验失败
+    （rows-S2「需先修」），故返回域层 ``task_readback`` 的契约平铺形状。
+    """
+    from .m1_domain import M1Store, task_readback
+
+    store = M1Store()
+    tenant = str(ctx.get("tenant_id") or "default")
+    task_id = str(payload.get("task_id") or "")
+    if not task_id:
+        raise ValueError("get_m1_task 需要 task_id")
+    task = store.get_task(tenant, task_id)
+    if task is None:
+        raise ValueError(f"task not found: {task_id}")
+    doc_row = store.get_document(tenant, task_id)
+    return {**task_readback(task, document=doc_row["document"] if doc_row else None),
+            "trace_id": _trace(ctx, "get_m1_task")}
+
+
+async def m1_batch_get(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """get_m1_batch：父任务 + 子任务聚合计数。
+
+    迁自 `_wt/INT/.../workers.py:871-887`（rows-S2 第 4 行）。契约
+    ``additionalProperties: false``（7 键），因此不能带 ``trace_id``/``evidence``
+    之外的键；返回域层 ``batch_readback``。
+    """
+    from .m1_domain import M1Store, batch_readback
+
+    store = M1Store()
+    tenant = str(ctx.get("tenant_id") or "default")
+    parent_id = str(payload.get("parent_id") or "")
+    if not parent_id:
+        raise ValueError("get_m1_batch 需要 parent_id")
+    parent = store.get_task(tenant, parent_id)
+    if parent is None:
+        raise ValueError(f"batch not found: {parent_id}")
+    return batch_readback(parent, store.batch_summary(tenant, parent_id))
+
+
+async def m1_document_get(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """get_m1_document：按任务取完整 m1.document.v2（含 source 契约字段）。
+
+    迁自 `_wt/INT/.../workers.py:890-908`（rows-S2 第 5 行）。返回域层
+    ``document_readback``（内部保证 ``source`` 存在，文档未就绪时抛
+    ``document not ready``）。
+    """
+    from .m1_domain import M1Store, document_readback
+
+    store = M1Store()
+    tenant = str(ctx.get("tenant_id") or "default")
+    task_id = str(payload.get("task_id") or "")
+    if not task_id:
+        raise ValueError("get_m1_document 需要 task_id")
+    task = store.get_task(tenant, task_id)
+    if task is None:
+        raise ValueError(f"task not found: {task_id}")
+    doc_row = store.get_document(tenant, task_id)
+    return {**document_readback(task, doc_row["document"] if doc_row else None),
+            "trace_id": _trace(ctx, "get_m1_document")}
+
+
+def _sha256_digest(raw: bytes) -> str:
+    from hashlib import sha256 as _sha
+
+    return _sha(raw).hexdigest()
+
+
+async def m1_tasks_list(payload: dict[str, Any], ctx: dict[str, Any]) -> list[dict[str, Any]]:
+    """list_m1_tasks：任务列表（不含子任务；按状态过滤/分页）。
+
+    迁自 `_wt/INT/.../workers.py:917-936`（rows-S2 第 8 行）。
+    """
+    from .m1_domain import M1Store
+
+    store = M1Store()
+    tenant = str(ctx.get("tenant_id") or "default")
+    status = str(payload.get("status") or "") or None
+    limit = int(payload.get("limit") or 0) or 200
+    offset = int(payload.get("offset") or 0)
+    rows = store.list_tasks(tenant, status=status, limit=10000)
+    summaries = []
+    for t in rows:
+        if t["kind"] == "child":
+            continue
+        summaries.append({
+            "task_id": t["task_id"], "filename": t["filename"], "status": t["status"],
+            "needs_review": t["status"] == "needs_review",
+            "overall_confidence": t["confidence"] or None,
+        })
+    return summaries[offset:offset + limit]
+
+
+async def m1_review_queue(payload: dict[str, Any], ctx: dict[str, Any]) -> list[dict[str, Any]]:
+    """list_m1_review_queue：当前待人工审核任务（HITL 入口）。
+
+    迁自 `_wt/INT/.../workers.py:939-954`（rows-S2 第 9 行）。
+    """
+    from .m1_domain import M1Store
+
+    store = M1Store()
+    tenant = str(ctx.get("tenant_id") or "default")
+    limit = int(payload.get("limit") or 0) or 200
+    offset = int(payload.get("offset") or 0)
+    rows = store.list_tasks(tenant, status="needs_review", limit=10000)
+    out = []
+    for t in rows:
+        if t["kind"] == "child":
+            continue
+        out.append({"task_id": t["task_id"], "filename": t["filename"],
+                    "overall_confidence": t["confidence"] or None})
+    return out[offset:offset + limit]
+
+
+async def m1_submit_review(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """submit_m1_review：人工审核闭合 HITL——approve → done（应用修正），驳回 → failed。
+
+    迁自 `_wt/INT/.../workers.py:957-979`（rows-S2 第 10 行）。两处改造：
+
+    - **ctx 键映射**（rows-S2 ③不一致）：INT 只读 ``ctx["actor"]``，V2 的
+      ``worker/executor.py`` 现在同时提供 ``actor``/``actor_user``
+      （INFRA-DECISIONS §1.2 键名映射别名），这里两个键都读，保证直接调用
+      handler（不带别名）时也不会退化成 ``"anonymous"``；
+    - 契约声明的 ``line_corrections``/``issue_resolutions`` 真正生效（R2-6，
+      ``m1_domain.apply_review``，引用不存在的 line_id/code 时 fail-closed）。
+    """
+    from .m1_domain import M1Store, apply_review
+
+    store = M1Store()
+    tenant = str(ctx.get("tenant_id") or "default")
+    task_id = str(payload.get("task_id") or "")
+    if not task_id:
+        raise ValueError("submit_m1_review 需要 task_id")
+    reviewer = str(payload.get("reviewer") or ctx.get("actor_user")
+                   or ctx.get("actor") or "anonymous")
+    return apply_review(
+        store, tenant_id=tenant, task_id=task_id,
+        approve=bool(payload.get("approve", True)),
+        reviewer=reviewer,
+        comment=str(payload.get("comment") or ""),
+        corrections=payload.get("corrections"),
+        header_corrections=payload.get("header_corrections"),
+        line_corrections=payload.get("line_corrections"),
+        issue_resolutions=payload.get("issue_resolutions"))
+
+
+def _m1_doc_rows(store: Any, tenant: str) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """有文档的任务行（kind=file/child，status done|needs_review）→ (task, document)。"""
+    rows = []
+    for t in store.list_tasks(tenant, limit=10000):
+        if t["kind"] == "child" or t["status"] not in ("done", "needs_review"):
+            continue
+        doc = store.get_document(tenant, t["task_id"])
+        if doc is not None and doc.get("document"):
+            rows.append((t, doc["document"]))
+    return rows
+
+
+def _path_values(document: dict[str, Any], field_path: str) -> list[Any]:
+    """支持子集：$.k / $.header.k / $.lines[*].k / $.source.k；其余显式不支持。"""
+    path = str(field_path or "").strip()
+    if not path.startswith("$"):
+        raise ValueError(f"field_path 必须以 $ 开头: {field_path}")
+    tokens = [p for p in path[1:].split(".") if p]
+    if not tokens:
+        return [document]
+    head = tokens[0]
+    if head in ("lines", "lines[*]") and len(tokens) >= 2:
+        lines = document.get("lines") if isinstance(document.get("lines"), list) else []
+        if tokens[1] == "*":
+            return lines
+        field = tokens[1]
+        return [ln.get(field) for ln in lines if isinstance(ln, dict)]
+    if head in ("header", "source") and len(tokens) == 2:
+        container = document.get(head)
+        if isinstance(container, dict):
+            return [container.get(tokens[1])]
+        return []
+    if len(tokens) == 1:
+        return [document.get(head)]
+    raise ValueError(f"field_path 暂不支持（本地子集 $/$.header/$.lines[*]/$.source）: {field_path}")
+
+
+async def m1_orders_search(payload: dict[str, Any], ctx: dict[str, Any]) -> list[dict[str, Any]]:
+    """search_m1_orders：按订单号/型号/名称/属性/日期检索订单明细行（契约数组）。
+
+    迁自 `_wt/INT/.../workers.py:1019-1088`（rows-S2 第 6 行）。契约
+    ``additionalProperties: false`` 且 5 个字段声明为 ``{"type": "string"}``，
+    本地文档缺字段时 INT 会把 ``None`` 写进去（输出校验直接
+    ``ValidationError``），故这里对纯字符串字段做 ``str(... or "")`` 归一
+    （缺 = 空串，不伪造值）。
+    """
+    from .m1_domain import M1Store
+
+    store = M1Store()
+    tenant = str(ctx.get("tenant_id") or "default")
+    limit = int(payload.get("limit") or 100)
+    offset = int(payload.get("offset") or 0)
+    order_number = str(payload.get("order_number") or "").lower()
+    model_q = str(payload.get("model") or "").lower()
+    name_q = str(payload.get("name") or "").lower()
+    attr_filters = {k: str(payload.get(k) or "").lower() for k in
+                    ("interface", "length", "color", "connector", "conductor", "od")}
+    attr_filters = {k: v for k, v in attr_filters.items() if v}
+    category_q = str(payload.get("category") or "").lower()
+    date_from = str(payload.get("date_from") or "")
+    date_to = str(payload.get("date_to") or "")
+
+    out: list[dict[str, Any]] = []
+    for task, document in _m1_doc_rows(store, tenant):
+        header = document.get("header") or {}
+        order_no = str(header.get("order_id") or "")
+        due = str(header.get("due_date") or header.get("order_date") or "")
+        if order_number and order_number not in order_no.lower():
+            continue
+        if date_from and due < date_from:
+            continue
+        if date_to and due > date_to:
+            continue
+        for line in document.get("lines") or []:
+            if not isinstance(line, dict):
+                continue
+            model = str(line.get("model") or line.get("product_code") or "")
+            blob = " ".join(str(v) for v in line.values()).lower()
+            if model_q and model_q not in model.lower() and model_q not in blob:
+                continue
+            if name_q and name_q not in blob:
+                continue
+            if category_q and category_q not in blob:
+                continue
+            if any(k not in blob for k in attr_filters.values()):
+                continue
+            quantity = line.get("quantity")
+            if not isinstance(quantity, (int, float)):
+                try:
+                    quantity = float(str(quantity).replace(",", ""))
+                except (TypeError, ValueError):
+                    quantity = None
+            item = {
+                "task_id": task["task_id"],
+                "line_id": str(line.get("line_id") or f"{order_no}::L0"),
+                "line_no": line.get("line_no"),
+                "order_number": order_no,
+                "document_date": due,
+                "model": model,
+                "product_code": str(line.get("product_code") or ""),
+                "name_raw": str(line.get("name_raw") or line.get("product_name") or ""),
+                "name_normalized": str(line.get("name") or line.get("name_normalized") or ""),
+                "full_product_name": str(line.get("full_product_name") or ""),
+                "product_category": str(line.get("product_category") or ""),
+                "quantity": quantity,
+                "unit": str(line.get("uom") or line.get("unit") or ""),
+                "line": line,
+            }
+            out.append(item)
+            if len(out) >= offset + limit:
+                break
+        if len(out) >= offset + limit:
+            break
+    return out[offset:offset + limit]
+
+
+async def m1_documents_search(payload: dict[str, Any], ctx: dict[str, Any]) -> list[dict[str, Any]]:
+    """search_m1_documents：全文/类型/字段路径过滤检索（契约数组）。
+
+    迁自 `_wt/INT/.../workers.py:1091-1137`（rows-S2 第 7 行）。``field_path``
+    仅支持本地子集（见 ``_path_values``），manifest 描述写"任意 JSON 字段路径"
+    属契约漂移，此处保持显式 ``ValueError`` 而非静默返回空。
+    """
+    from .m1_domain import M1Store
+
+    store = M1Store()
+    tenant = str(ctx.get("tenant_id") or "default")
+    limit = int(payload.get("limit") or 50)
+    offset = int(payload.get("offset") or 0)
+    q = str(payload.get("q") or "").lower()
+    doc_type = str(payload.get("document_type") or "")
+    doc_subtype = str(payload.get("document_subtype") or "")
+    field_path = str(payload.get("field_path") or "")
+    field_value = str(payload.get("field_value") or "").lower()
+
+    out: list[dict[str, Any]] = []
+    for task, document in _m1_doc_rows(store, tenant):
+        if doc_type and str(document.get("document_type") or "") != doc_type:
+            continue
+        if doc_subtype and str(document.get("document_subtype") or "") != doc_subtype:
+            continue
+        header = document.get("header") or {}
+        if q:
+            blob = (json.dumps(document, ensure_ascii=False) + " " + task["filename"]).lower()
+            if q not in blob:
+                continue
+        if field_path:
+            values = _path_values(document, field_path)
+            if not any(field_value in str(v).lower() for v in values if v is not None):
+                continue
+        elif field_value:
+            raise ValueError("field_value 必须与 field_path 配合使用")
+        title = document.get("title") or None
+        order_number = (header or {}).get("order_id") or None
+        normalized_date = (document.get("normalized_date")
+                           or (header or {}).get("due_date")
+                           or (header or {}).get("order_date") or None)
+        out.append({
+            "task_id": task["task_id"], "schema_version": "m1.document.v2",
+            "document_type": str(document.get("document_type") or "order"),
+            "document_subtype": str(document.get("document_subtype") or ""),
+            "title": title, "order_number": order_number,
+            "normalized_date": normalized_date,
+            "filename": task["filename"], "sha256": task["sha256"],
+        })
+        if len(out) >= offset + limit:
+            break
+    return out[offset:offset + limit]
+
+
+def _export_segment(value: Any, fallback: str = "default") -> str:
+    """导出路径段的安全化（租户/任务 ID 只保留字母数字与 ``-_.``）。"""
+    cleaned = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in str(value or ""))
+    return cleaned.strip("._") or fallback
+
+
+async def m1_export_order(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """export_m1_order：生成订单标准 Excel（订单头/产品明细/校验问题/原始证据 4 sheet）。
+
+    迁自 `_wt/INT/.../workers.py:1140-1195`（rows-S2 第 11 行）。两处改造：
+
+    - **list-into-cell 崩溃修复**（rows-S2「行为缺陷需先修」）：``paths`` 是
+      ``list[str]``，直接写单元格会 ``ValueError: Cannot convert [...] to
+      Excel``（只要文档有校验问题就必现）→ 改为 ``", ".join``；
+    - **导出目录租户隔离**：INT 硬编码 ``runtime/m1-exports``，不同租户的
+      ``{task_id}.xlsx`` 同目录。改为 ``<YUNPAI_M1_EXPORT_DIR 或
+      runtime/m1-exports>/<tenant>/<task_id>.xlsx``，路径段做安全化。
+    """
+    from io import BytesIO as _BytesIO
+    from pathlib import Path as _Path
+
+    from .m1_domain import M1Store
+
+    store = M1Store()
+    tenant = str(ctx.get("tenant_id") or "default")
+    task_id = str(payload.get("task_id") or "")
+    if not task_id:
+        raise ValueError("export_m1_order 需要 task_id")
+    task = store.get_task(tenant, task_id)
+    if task is None:
+        raise ValueError(f"task not found: {task_id}")
+    doc_row = store.get_document(tenant, task_id)
+    if doc_row is None or doc_row.get("document") is None:
+        raise ValueError(f"document not ready for task: {task_id}")
+    document = doc_row["document"]
+    try:
+        from openpyxl import Workbook
+    except ImportError as exc:
+        raise ValueError("导出需要 openpyxl") from exc
+    header = document.get("header") or {}
+    wb = Workbook()
+    ws_head = wb.active
+    ws_head.title = "订单头"
+    for k, v in header.items():
+        ws_head.append([k, v])
+    ws_lines = wb.create_sheet("产品明细")
+    lines = document.get("lines") or []
+    if lines:
+        ws_lines.append(list(lines[0].keys()))
+        for line in lines:
+            ws_lines.append([line.get(k) for k in lines[0].keys()])
+    ws_issues = wb.create_sheet("校验问题")
+    for issue in document.get("validation_issues") or []:
+        if isinstance(issue, dict):
+            paths = issue.get("paths")
+            if isinstance(paths, (list, tuple)):
+                # openpyxl 不能写 list 到单元格（INT 原实现会 ValueError）
+                paths = ", ".join(str(item) for item in paths)
+            ws_issues.append([issue.get("code"), issue.get("message"), paths])
+    ws_evidence = wb.create_sheet("原始证据")
+    ws_evidence.append(["source", json.dumps(document.get("source"), ensure_ascii=False)])
+    for fe in document.get("field_evidence") or []:
+        if isinstance(fe, dict):
+            ws_evidence.append([fe.get("key"),
+                                json.dumps(fe.get("locator"), ensure_ascii=False),
+                                fe.get("excerpt")])
+    buf = _BytesIO()
+    wb.save(buf)
+    export_dir = _Path(os.getenv("YUNPAI_M1_EXPORT_DIR") or "runtime/m1-exports") \
+        / _export_segment(tenant)
+    export_dir.mkdir(parents=True, exist_ok=True)
+    target = (export_dir / f"{_export_segment(task_id, 'task')}.xlsx").resolve()
+    target.write_bytes(buf.getvalue())
+    filename = f"{str(header.get('order_id') or task_id)}.xlsx"
+    return {"task_id": task_id, "filename": filename,
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "download_url": target.as_uri(), "generated": True}
+
+
+async def m1_generate_report(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """generate_m1_report：Markdown 综合报告（单任务或批次父任务）。
+
+    迁自 `_wt/INT/.../workers.py:1198-1213`（rows-S2 第 12 行）。契约声明的
+    ``force`` 真正生效（R2-7，``m1_domain.build_report``：首次 generated /
+    内容未变 cached / force=True 强制重生成）。
+    """
+    from .m1_domain import M1Store, build_report
+
+    store = M1Store()
+    tenant = str(ctx.get("tenant_id") or "default")
+    task_id = str(payload.get("task_id") or "")
+    if not task_id:
+        raise ValueError("generate_m1_report 需要 task_id")
+    return build_report(store, tenant_id=tenant, task_id=task_id,
+                        note=str(payload.get("note") or ""),
+                        force=bool(payload.get("force", False)))
 
 
 async def m2_bom(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
@@ -1409,6 +1783,14 @@ async def ingest_canonical(payload: dict[str, Any], ctx: dict[str, Any]) -> dict
             "evidence": [_evidence("catalog", "ingest_canonical", f"{entity_type} rows={result['data'].get('inserted_rows')} dup={result['data'].get('duplicate')}")]}
 
 
+from .m1_knowledge import (  # noqa: E402 - S2 M1-3 知识链（canonical 事实源，随迁）
+    knowledge_entity_get as _k_entity_get,
+    knowledge_graph_get as _k_graph_get,
+    knowledge_list_entities as _k_list_entities,
+    knowledge_search as _k_search,
+    knowledge_stats as _k_stats,
+)
+
 HANDLERS = {
     "data_import_run": m0_import,
     "data_import_status": m0_status,
@@ -1443,7 +1825,27 @@ HANDLERS = {
     "list_m0_documents": m0_read_documents,
     "list_m0_inventory": m0_read_inventory,
     "list_m0_entities": m0_read_entities,
+    # ── M1 文档解析（本地实现；契约见 registry-manifests/m1.json）──────────
+    # 迁自 _wt/INT/src/yunpai_langgraph/workers.py（rows-S2 全 17 条「改造后搬」）。
+    # ingest_document 覆盖 V2 原 fixture/preview 版（provider=local + M1Store 持久化）。
     "ingest_document": m1_parse,
+    "ingest_m1_archive": m1_archive_ingest,
+    "get_m1_task": m1_task_get,
+    "get_m1_batch": m1_batch_get,
+    "get_m1_document": m1_document_get,
+    "list_m1_tasks": m1_tasks_list,
+    "list_m1_review_queue": m1_review_queue,
+    "submit_m1_review": m1_submit_review,
+    "search_m1_orders": m1_orders_search,
+    "search_m1_documents": m1_documents_search,
+    "export_m1_order": m1_export_order,
+    "generate_m1_report": m1_generate_report,
+    # S2 M1-3：知识链 5 个（真实本地，canonical 事实源经 M0Store.list_entities）
+    "search_m1_knowledge": _k_search,
+    "list_m1_knowledge_entities": _k_list_entities,
+    "get_m1_knowledge_entity": _k_entity_get,
+    "get_m1_knowledge_graph": _k_graph_get,
+    "get_m1_knowledge_stats": _k_stats,
     "run_bom_sop_workflow": m2_bom,
     # ── M2 BOM/SOP 本地实现（契约见 registry-manifests/m2.json；rows-S3.md）──
     # run_bom_sop_workflow 保留 V2 既有 m2_bom（已同步 P1-9 修复）；其余 6 个由
