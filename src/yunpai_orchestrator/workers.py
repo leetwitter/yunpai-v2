@@ -468,7 +468,38 @@ def _m2_record_run(ctx: dict[str, Any], *, run_id: str, status: str,
 
 
 async def m3_mrp(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    from .m3_local import m2_package_to_order_bom, open_po_quantities
+
     order, bom = payload.get("order") or {}, payload.get("bom") or {}
+    # R4-REQ-1：契约 anyOf[1] 允许 m2_package 作为 order+bom 的替代，但本地 handler
+    # 原先只读 order/bom，该分支实测直接 BLOCKED_INPUT（契约分支未实现）。转换是
+    # 确定性的（不推测填充），缺字段由 m2_package_to_order_bom 抛 ValueError。
+    # 空对象视为「未提供」——此时仍走下面的 MISSING_BOM 缺参路径，避免把「没给 BOM」
+    # 误报成「m2_package 不完整」。
+    if (not bom.get("lines") and isinstance(payload.get("m2_package"), dict)
+            and payload["m2_package"]):
+        try:
+            converted = m2_package_to_order_bom(payload["m2_package"])
+        except ValueError as exc:
+            fallback = payload.get("order") or {}
+            return {
+                "success": False, "code": "BLOCKED_INPUT",
+                "errors": [{"code": "M2_PACKAGE_INCOMPLETE", "message": str(exc), "details": []}],
+                "data": {
+                    "procurement_plan_id": f"blocked-{ctx['task_id'][-10:]}",
+                    "project_id": str(fallback.get("project_id") or fallback.get("order_id") or ""),
+                    "order_id": str(fallback.get("order_id") or ""), "bom_id": str(fallback.get("bom_id") or ""),
+                    "product_name": str(fallback.get("product_name") or ""),
+                    "order_qty": _number(fallback.get("order_qty")), "due_date": str(fallback.get("due_date") or ""),
+                    "status": "requires_material_review", "availability_status": "no_procurement_materials",
+                    "lines": [], "shortage_lines": [], "warnings": ["m2_package 不完整，停止需求计算"],
+                    "material_matching": [], "quality_issues": [],
+                    "supply_source": {"owner": "m3", "provider": "local_fixture", "upstream_supply_ignored": False},
+                },
+                "evidence": [_evidence("m3", "m2_package", f"m2_package 转换失败：{exc}")],
+                "trace_id": _trace(ctx, "m3"),
+            }
+        order, bom = converted["order"], converted["bom"]
     if not bom.get("lines"):
         order_id = str(order.get("order_id") or "")
         bom_id = str(order.get("bom_id") or bom.get("bom_id") or "")
@@ -485,17 +516,21 @@ async def m3_mrp(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]
             "evidence": [_evidence("m3", "bom", "未提供 BOM 行，停止需求计算")], "trace_id": _trace(ctx, "m3"),
         }
     inventory = {str(x.get("material_code")): _number(x.get("available_qty")) for x in payload.get("inventory_snapshot", [])}
+    # R4-REQ-2：open_purchase_orders（在途量）此前被完全忽略（open_po_qty 恒 0.0）。
+    # 现按物料汇总并参与缺口计算；语义边界明确，不猜交期/供应商。
+    open_po = open_po_quantities(payload)
     output_lines = []
     for index, line in enumerate(bom.get("lines", []), start=1):
         code = str(line.get("material_code") or "")
         gross = _number(order.get("order_qty")) * _number(line.get("qty_per")) * (1 + _number(line.get("loss_rate")))
         available = inventory.get(code, 0.0)
-        shortage = max(0.0, gross - available)
+        open_po_qty = open_po.get(code, 0.0)
+        shortage = max(0.0, gross - available - open_po_qty)
         output_lines.append({
             "line_id": str(line.get("line_id") or f"line-{index}"), "material_code": code,
             "material_name": str(line.get("material_name") or code), "uom": str(line.get("uom") or "pcs"),
             "gross_required_qty": gross, "book_qty": available, "available_qty": available,
-            "open_po_qty": 0.0, "shortage_qty": shortage, "suggest_purchase_qty": shortage,
+            "open_po_qty": open_po_qty, "shortage_qty": shortage, "suggest_purchase_qty": shortage,
             "readiness": "shortage" if shortage else "ready",
             "recommendation": "purchase" if shortage else "use_inventory",
         })
@@ -709,6 +744,18 @@ def _m2(name: str):
     return LOCAL_HANDLERS[name]
 
 
+def _m3(name: str):
+    """Lazily import the local M3 handler for a manifest tool name.
+
+    M3 本地实现只有一个正式工具（``get_material_readiness_snapshot``）；
+    ``run_m3_procurement_requirements`` 的 handler 在本文件（``m3_mrp``）。
+    其余 13 件 LEGACY 与 receive 类按 rows-S4 判「保留HTTP / 不搬」，不得登记
+    （登记会遮蔽 HTTP 绑定；receive 属 ORCHESTRATION_INTERNAL，见 §3.3）。
+    """
+    from .m3_local import LOCAL_HANDLERS
+    return LOCAL_HANDLERS[name]
+
+
 async def sample_file(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     """确定性采样：把文件压成 LLM 可看的表头 + 前 N 行样本，不伪造内容。"""
     from .recognized_store import sample_file as _sample
@@ -851,6 +898,8 @@ HANDLERS = {
     "list_m2_runs": _m2("list_m2_runs"),
     "get_m2_run": _m2("get_m2_run"),
     "run_m3_procurement_requirements": m3_mrp,
+    # M3 正式齐套快照（本地实现；契约见 registry-manifests/m3.json）
+    "get_material_readiness_snapshot": _m3("get_material_readiness_snapshot"),
     "import_m4_purchase_suggestions_json": m4_purchase,
     "solve_scheduling": m5_schedule,
     # M5 PMC v2 tool handlers (Taskbook Tasks 3-5); the two excluded tools

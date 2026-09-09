@@ -23,11 +23,6 @@
             "required": [
               "m2_package"
             ]
-          },
-          {
-            "required": [
-              "m2_package_dir"
-            ]
           }
         ],
         "properties": {
@@ -223,7 +218,7 @@
           },
           "open_purchase_orders": {
             "type": "array",
-            "description": "旧调用兼容字段；正式计算忽略该字段并查询 M3 Provider。",
+            "description": "在途采购量（按 material_code 汇总 open_po_qty）。本地实现经 m3_local.open_po_quantities 汇总并参与缺口计算：shortage = max(0, gross - available - open_po)。",
             "items": {
               "type": "object",
               "required": [
@@ -255,7 +250,7 @@
           },
           "historical_usage": {
             "type": "array",
-            "description": "旧调用兼容字段；正式计算忽略该字段并查询 M3 Provider。",
+            "description": "历史用量（兼容字段）。safety_stock_ratio 的换算公式尚无业务定义，本地实现不消费该字段（不推测、不伪造安全库存）；保留仅为契约兼容，待业务方给出公式后实现。",
             "items": {
               "type": "object",
               "required": [
@@ -286,11 +281,7 @@
           },
           "m2_package": {
             "type": "object",
-            "description": "兼容当前 M2 输出的数据包。"
-          },
-          "m2_package_dir": {
-            "type": "string",
-            "description": "兼容已有本地 M2 产物目录。"
+            "description": "兼容当前 M2 输出的数据包（bom_header/bom_lines）。本地实现经 m3_local.m2_package_to_order_bom 确定性转换为 order+bom；缺字段返回 BLOCKED_INPUT/M2_PACKAGE_INCOMPLETE，不推测填充。"
           }
         }
       },
@@ -834,7 +825,10 @@
       "description": "[LEGACY] 读取旧版持久化采购计划全量 bundle，仅供已有调用兼容。",
       "http": {
         "method": "GET",
-        "path": "/api/v1/m3/persisted/procurement-plans/{plan_id}"
+        "path": "/api/v1/m3/persisted/procurement-plans/{plan_id}",
+        "query_fields": [
+          "tenant_id"
+        ]
       },
       "input_schema": {
         "type": "object",
@@ -1153,7 +1147,10 @@
       "description": "[LEGACY] 查询旧版 PR/PO 草稿；采购执行职责应迁移到 M4。",
       "http": {
         "method": "GET",
-        "path": "/api/v1/m3/pr-po-drafts"
+        "path": "/api/v1/m3/pr-po-drafts",
+        "query_fields": [
+          "tenant_id"
+        ]
       },
       "input_schema": {
         "type": "object",
@@ -1221,7 +1218,10 @@
       "description": "[LEGACY] 审批旧版 M3 任务，仅供已有流程兼容。",
       "http": {
         "method": "POST",
-        "path": "/api/v1/m3/approval-tasks/{approval_id}:approve"
+        "path": "/api/v1/m3/approval-tasks/{approval_id}:approve",
+        "query_fields": [
+          "tenant_id"
+        ]
       },
       "input_schema": {
         "type": "object",
@@ -1263,14 +1263,19 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "authorization"
     },
     {
       "name": "reject_m3_task",
       "description": "[LEGACY] 驳回旧版 M3 任务，仅供已有流程兼容。",
       "http": {
         "method": "POST",
-        "path": "/api/v1/m3/approval-tasks/{approval_id}:reject"
+        "path": "/api/v1/m3/approval-tasks/{approval_id}:reject",
+        "query_fields": [
+          "tenant_id"
+        ]
       },
       "input_schema": {
         "type": "object",
@@ -1312,14 +1317,19 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "authorization"
     },
     {
       "name": "request_change_m3_task",
       "description": "[LEGACY] 请求修改旧版 M3 任务，仅供已有流程兼容。",
       "http": {
         "method": "POST",
-        "path": "/api/v1/m3/approval-tasks/{approval_id}:request-change"
+        "path": "/api/v1/m3/approval-tasks/{approval_id}:request-change",
+        "query_fields": [
+          "tenant_id"
+        ]
       },
       "input_schema": {
         "type": "object",
@@ -1361,14 +1371,19 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "authorization"
     },
     {
       "name": "approve_to_send_m3_task",
       "description": "[LEGACY] 批准并发送旧版供应商消息；该职责应迁移到 M4。",
       "http": {
         "method": "POST",
-        "path": "/api/v1/m3/approval-tasks/{approval_id}:approve_to_send"
+        "path": "/api/v1/m3/approval-tasks/{approval_id}:approve_to_send",
+        "query_fields": [
+          "tenant_id"
+        ]
       },
       "input_schema": {
         "type": "object",
@@ -1410,7 +1425,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "authorization"
     },
     {
       "name": "get_m3_m4_handoffs",
@@ -1525,7 +1542,7 @@
     },
     {
       "name": "receive_m3_material_demand",
-      "description": "接收 M5 排程发布后的 material-demand 反馈（经 orchestrator bridge 转交 M3）。幂等受理并持久化（同 task_id+event_id 重放返回同一 feedback_ref）；应用（并入计划缺口）由后续阶段人工/规则确认，本工具只受理记录。",
+      "description": "接收 M5 排程发布后的 material-demand 反馈（经 orchestrator bridge 转交 M3）。幂等受理并持久化（同 task_id+event_id 重放返回同一 feedback_ref）；应用（并入计划缺口）由后续阶段人工/规则确认，本工具只受理记录。【预留接口：当前无生产者——M5 侧 material-demand 生产者未实现，orchestration_bridge 无该分支；仅 MCP/直连可调。与 receive_m4_schedule_impact_proposal 同一「先接收后接线」模式。】",
       "http": {
         "method": "POST",
         "path": "/api/v1/m3/material-demand/receive"

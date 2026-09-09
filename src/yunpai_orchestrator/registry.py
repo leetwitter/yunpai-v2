@@ -35,7 +35,7 @@ except ImportError:  # pragma: no cover - only used in dependency-free smoke env
             error = next(self.iter_errors(instance), None)
             if error: raise error
 
-from .contracts import ToolHandler, ToolSpec, normalize_contract_result
+from .contracts import HTTP_QUERY_FIELDS, ToolHandler, ToolSpec, normalize_contract_result
 
 
 def _contract_defaults(module: str, name: str, item: dict[str, Any]) -> dict[str, Any]:
@@ -117,6 +117,7 @@ class ToolRegistry:
                     method=http.get("method", "POST"), path=http.get("path", ""),
                     timeout_s=float(http.get("timeout_s", 60)), tool_type=item.get("type", "tool"),
                     required_headers=tuple(http.get("required_headers", [])),
+                    query_fields=tuple(str(field) for field in http.get("query_fields", [])),
                     agent_endpoints=item.get("agent_endpoints", {}), tags=tuple(item.get("tags", [])),
                     **metadata,
                 ))
@@ -181,7 +182,7 @@ class ToolRegistry:
                 # generic multipart adapter.
                 files = [] if _spec.module == "m2" else _extract_uploads(body)
                 request_kwargs: dict[str, Any] = {"headers": headers}
-                query_fields = _http_query_fields(_spec.name)
+                query_fields = _http_query_fields(_spec)
                 query = {
                     key: body.pop(key)
                     for key in query_fields
@@ -335,19 +336,15 @@ def _http_headers(
     return headers
 
 
-def _http_query_fields(tool_name: str) -> frozenset[str]:
-    if tool_name in {
-        "get_persisted_m3_plan",
-        "get_pr_po_drafts",
-        "approve_m3_task",
-        "reject_m3_task",
-        "request_change_m3_task",
-        "approve_to_send_m3_task",
-    }:
-        return frozenset({"tenant_id"})
-    if tool_name == "list_m0_entities":
-        return frozenset({"entity_type", "tenant_id"})
-    return frozenset()
+def _http_query_fields(spec: ToolSpec) -> frozenset[str]:
+    """HTTP 适配器显式走 query 的字段（R4-REQ-5）。
+
+    单一来源改为 manifest ``http.query_fields``；未声明时回退到
+    ``contracts.HTTP_QUERY_FIELDS``（兼容未升级的 manifest）。
+    """
+    if spec.query_fields:
+        return frozenset(spec.query_fields)
+    return HTTP_QUERY_FIELDS.get(spec.name, frozenset())
 
 
 def _http_error_detail(response: Any) -> str:
