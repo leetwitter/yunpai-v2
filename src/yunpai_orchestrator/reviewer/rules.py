@@ -7,6 +7,8 @@
 - run_bom_sop_workflow: 产出工程草稿 → gate engineering（禁当 retry 用）
 - ingest_canonical: 候选落库 → gate candidate
 - BLOCKED_INPUT 结果 → gate blocked_input（data 补数门）
+- M4 写工具（16 条，rows-S5.md §「需补审查」）：缺供应商映射 → gate procurement
+  （补数可重跑）；其余写操作 → gate authorization（执行后人工授权，approve 不重跑副作用）
 默认规则：manifest spec.review_gate ∈ {candidate,review,engineering,procurement,schedule}
 且未授权时 → 对应 Gate（schedule 归一化为 apply）。
 """
@@ -21,8 +23,8 @@ GATE_APPLY = "apply"
 
 @dataclass(frozen=True)
 class Check:
-    field: str                    # 结果内点路径，如 "data.needs_review"
-    op: str                       # eq | ne | lt | gt | truthy
+    field: str                    # 结果内点路径，如 "data.needs_review"；支持 "*" 逐项展开
+    op: str                       # eq | ne | lt | gt | truthy | any_falsy
     value: Any = None
     action: str = "pass"          # pass | fail | gate:<type>
     reason: str = ""
@@ -50,6 +52,81 @@ RULES: dict[str, list[Check]] = {
     "ingest_canonical": [
         Check("success", "eq", True, action="gate:candidate",
               reason="canonical 候选落库须 M0 candidate Gate 审批后发布"),
+    ],
+    # ── M4 采购 / 供应商 / 跟踪（rows-S5.md §「需补审查（19，系统性 + 2 个 P0）」）──
+    # 系统性缺口：V2 对 M4 无任何 Gate 路径（rows-S5.md:41/89）——写工具必须逐条补门。
+    # 门型选择（与 M2/M5 分片同一范式）：
+    #   * ``authorization``：写操作执行后需人工授权。``approve`` 决策把步骤直接标
+    #     completed（``graph.py:243-250``），**不重跑副作用**，因此不会重复写库；
+    #     ``apply_decision`` 把工具并入 ``authorized_steps`` 后不再开门。
+    #   * ``procurement``：仅用于「补供应商数据后可重跑」的场景。决策
+    #     ``retry``/``supplier_by_material`` 会带 supplement 重装配重试
+    #     （``graph.py:256-259``）→ 条件必须在补数后自动消失，否则会反复开门。
+    "import_m4_purchase_suggestions_json": [
+        Check("data.items.*.supplier_name", "any_falsy", action="gate:procurement",
+              reason="采购建议缺少权威供应商映射（缺供应商 → 补供应商后重试；"
+                     "与 INT agents.py:478-482 同口径）"),
+    ],
+    "generate_m4_purchase_orders": [
+        Check("status", "ne", "failed", action="gate:authorization",
+              reason="生成采购单草稿是持久化写操作，必须人工授权"),
+    ],
+    "submit_m4_purchase_order_review": [
+        Check("status", "ne", "failed", action="gate:authorization",
+              reason="提交采购单人工审核是状态写操作，必须人工授权"),
+    ],
+    "approve_m4_purchase_order": [
+        Check("status", "ne", "failed", action="gate:authorization",
+              reason="采购单批准（→approved_for_message）是写操作，必须人工授权（P0：V2 原无任何 Gate 路径）"),
+    ],
+    "request_changes_m4_purchase_order": [
+        Check("status", "ne", "failed", action="gate:authorization",
+              reason="退回修改是状态写操作，必须人工授权"),
+    ],
+    "generate_m4_purchase_inquiry_message": [
+        Check("status", "ne", "failed", action="gate:authorization",
+              reason="生成供应商询价草稿写 supplier_message 表，必须人工授权后才可对外使用"),
+    ],
+    "send_m4_purchase_order": [
+        Check("status", "ne", "failed", action="gate:authorization",
+              reason="legacy 出站记录是写操作，必须人工授权（P0-5：远程调用已在 registry 拦截）"),
+    ],
+    "create_m4_supplier": [
+        Check("status", "ne", "failed", action="gate:authorization",
+              reason="新建供应商主数据是写操作，必须人工授权"),
+    ],
+    "update_m4_supplier": [
+        Check("status", "ne", "failed", action="gate:authorization",
+              reason="更新供应商主数据是写操作，必须人工授权"),
+    ],
+    "create_m4_supplier_reply": [
+        Check("status", "ne", "failed", action="gate:authorization",
+              reason="保存供应商回复原文是写操作，必须人工授权"),
+    ],
+    "parse_m4_supplier_reply": [
+        Check("status", "ne", "failed", action="gate:authorization",
+              reason="解析结果回写 parse_status/parse_provider 是写操作，必须人工授权（不自动写追踪）"),
+    ],
+    "confirm_m4_supplier_reply": [
+        Check("status", "ne", "failed", action="gate:authorization",
+              reason="人工确认解析结果会写入追踪（正式承诺），必须人工授权"),
+    ],
+    "confirm_m4_supplier_fact": [
+        Check("status", "ne", "failed", action="gate:authorization",
+              reason="行级供应事实落库是写操作，必须人工授权"),
+    ],
+    "scan_m4_purchase_alerts": [
+        Check("status", "ne", "failed", action="gate:authorization",
+              reason="预警扫描写预警表并回标超期，必须人工授权"),
+    ],
+    "generate_m4_urge_message": [
+        Check("status", "ne", "failed", action="gate:authorization",
+              reason="催单草稿覆盖 alert.urge_message 是写操作，必须人工授权"),
+    ],
+    "query_m4_material_supply_snapshot": [
+        Check("status", "ne", "failed", action="gate:authorization",
+              reason="查询即惰性持久化供应快照（写操作，非只读）；必须人工授权（P0-1："
+                     "已从 M4_READ_ONLY_SKILL_OPERATIONS 摘除）"),
     ],
 }
 
@@ -80,12 +157,28 @@ def gate_type_for(tool: str, spec: Any | None) -> str:
 
 
 def _dig(result: dict[str, Any], path: str) -> Any:
+    """点路径取值；``*`` 表示「在列表元素上逐项展开后续字段」。
+
+    例：``data.items.*.supplier_name`` → 每个建议行的 supplier_name 列表。
+    未加 ``*`` 的路径行为与迁移前完全一致（逐层 dict 取值）。
+    """
     node: Any = result
     for part in path.split("."):
+        if part == "*":
+            if not isinstance(node, list):
+                return None
+            continue  # 后续字段逐项映射到列表元素
+        if isinstance(node, list):
+            node = [item.get(part) if isinstance(item, dict) else None for item in node]
+            continue
         if not isinstance(node, dict):
             return None
         node = node.get(part)
     return node
+
+
+def _blank(value: Any) -> bool:
+    return value in (None, "", [], {})
 
 
 def _hit(check: Check, result: dict[str, Any]) -> bool:
@@ -106,6 +199,13 @@ def _hit(check: Check, result: dict[str, Any]) -> bool:
             return False
     if check.op == "truthy":
         return bool(actual)
+    if check.op == "any_falsy":
+        # 列表形状结果（如采购建议行）专用：展开后存在空值即命中。
+        # 路径取不到值（None）时保守不命中——避免对非目标形状误开门。
+        if actual is None:
+            return False
+        values = actual if isinstance(actual, list) else [actual]
+        return any(_blank(value) for value in values)
     return False
 
 
