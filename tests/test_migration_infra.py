@@ -98,7 +98,12 @@ async def test_executor_skill_path_without_registry_fails_loudly():
 
 
 def test_migrated_modules_import_and_declare_checklists():
-    """裁决 2：随迁模块可加载；骨架模块带待迁清单。"""
+    """裁决 2：随迁模块可加载；骨架模块带待迁清单；**已迁完的模块**改校验 ``LOCAL_HANDLERS``。
+
+    分片按 ``INFRA-DECISIONS.md §2.6.2`` 完成迁入后会删除 ``PORT_SYMBOLS`` 并改写为
+    ``LOCAL_HANDLERS``（如 M2 已完成），此时不应再要求骨架清单存在——否则每个分片都要
+    各自改这一处共享断言。父会话统一口径：**二者其一**，且迁完后不得残留 PORT_SYMBOLS。
+    """
     for name in MIGRATED_MODULES:
         module = importlib.import_module(f"yunpai_orchestrator.{name}")
         assert module.__file__
@@ -106,6 +111,12 @@ def test_migrated_modules_import_and_declare_checklists():
         module = importlib.import_module(f"yunpai_orchestrator.{name}")
         symbols = getattr(module, "PORT_SYMBOLS", None)
         handlers = getattr(module, "PORT_HANDLERS", None)
+        local_handlers = getattr(module, "LOCAL_HANDLERS", None)
+        if local_handlers is not None:
+            assert isinstance(local_handlers, dict) and local_handlers, \
+                f"{name} 的 LOCAL_HANDLERS 不能为空"
+            assert not symbols, f"{name} 迁完后不应再保留 PORT_SYMBOLS"
+            continue
         assert symbols, f"{name} 缺 PORT_SYMBOLS 清单"
         assert isinstance(handlers, dict), f"{name} 缺 PORT_HANDLERS 清单"
         for symbol, kind, lineno in symbols:
