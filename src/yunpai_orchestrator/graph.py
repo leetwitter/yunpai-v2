@@ -246,8 +246,10 @@ def _apply_m5_release(state: dict[str, Any], gate: dict[str, Any],
             trace = list(state.get("trace") or [])
             trace.append({"event": "m5.release_conflict", "code": exc.code,
                           "message": exc.message, "at": now_iso()})
-            return {"pending_gate": {**gate, "conflict": {"code": exc.code, "message": exc.message}},
-                    "status": "waiting_human", "trace": trace}
+            # 冲突不得静默走 completed：由调用方撤回本次授权并把步骤退回 pending，
+            # 让 apply 门重新打开（人工可恢复）。
+            return {"release_conflict": {"code": exc.code, "message": exc.message},
+                    "trace": trace}
     data.update({
         "lifecycle_status": "released",
         "head_revision": applied.get("head_revision") or readback.get("head_revision"),
@@ -331,9 +333,22 @@ def reviewer_check_node(deps: GraphDeps) -> Callable:
                 released = _apply_m5_release(state, gate,
                                              actor=str((decision or {}).get("actor") or ""))
                 if released is not None:
-                    if "outputs" in released and "outputs" in updates:
-                        released["outputs"] = {**updates["outputs"], **released["outputs"]}
-                    updates = {**updates, **released}
+                    conflict = released.pop("release_conflict", None)
+                    if conflict:
+                        # head CAS 冲突：撤回本次授权 + 步骤退回 pending，
+                        # 重派发后 apply 门会重新打开（不把冲突吞成 completed）
+                        plan = engine.mark(plan, step_id, "pending")
+                        step = {**step, "status": "pending"}
+                        updates = {**updates, **released,
+                                   "plan": plan, "current_step": step,
+                                   "pending_gate": {**gate, "conflict": conflict},
+                                   "authorized_steps": [
+                                       s for s in (state.get("authorized_steps") or [])
+                                       if s != tool]}
+                    else:
+                        if "outputs" in released and "outputs" in updates:
+                            released["outputs"] = {**updates["outputs"], **released["outputs"]}
+                        updates = {**updates, **released}
                 return updates
             if normalized == "reject":
                 plan = engine.mark(plan, step_id, "skipped")
