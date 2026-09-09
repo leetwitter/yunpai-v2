@@ -4,7 +4,7 @@
   "tools": [
     {
       "name": "solve_scheduling",
-      "description": "幂等求解并持久化一版 M5 排程候选。输入真实订单、已审批工艺/工时、资源、班次及幂等键，输出 draft 计划、校验报告和版本号。生产排程、后续人工审批/发布或动态重排必须使用本工具；缺少外部事实时失败关闭。缺权威数据（订单/工艺/资源/物料可用性/生产单元映射）时由编排层返回可恢复 data_incomplete（数据未完善）；本工具不补造默认库存、批次或生产单元。",
+      "description": "幂等求解并持久化一版 M5 排程候选。输入真实订单、已审批工艺/工时、资源、班次及幂等键，输出 draft 计划、校验报告和版本号。生产排程、后续人工审批/发布或动态重排必须使用本工具；缺少外部事实时失败关闭。缺权威数据（订单/工艺/资源/物料可用性/生产单元映射）时由编排层返回可恢复 data_incomplete（数据未完善）；本工具不补造默认库存、批次或生产单元。定位边界：四个入口共用同一求解内核（run_pmc_v2），只有本工具产出可审批/可发布的生产 draft；诊断分析用 run_m5_intelligent_schedule，事件驱动重排用 replan_m5_schedule，采购 proposal 用 generate_m5_material_procurement_plan。",
       "http": {
         "method": "POST",
         "path": "/api/v1/schedule-candidates",
@@ -668,6 +668,8 @@
           }
         }
       },
+      "side_effect": "local_write",
+      "review_gate": "apply",
       "execution": "sync"
     },
     {
@@ -1001,7 +1003,7 @@
     },
     {
       "name": "replan_m5_schedule",
-      "description": "从已持久化的权威计划输入应用一个幂等生产事件并动态重排。服务端恢复原始输入，校验场景 head，禁止客户端用陈旧或伪造的完整快照覆盖当前状态。",
+      "description": "从已持久化的权威计划输入应用一个幂等生产事件并动态重排。服务端恢复原始输入，校验场景 head，禁止客户端用陈旧或伪造的完整快照覆盖当前状态。定位：事件驱动的权威重排，产出新的 draft 版本（data.lifecycle_status=draft），仍需人工 Apply Gate 才能发布。禁用场景：不要用它整包替换事实（要改事实请先 ingest_m5_planning_snapshot，再 solve_scheduling）；不要用它做纯分析（用 run_m5_intelligent_schedule）。",
       "http": {
         "method": "POST",
         "path": "/api/v1/schedules/{base_plan_version}/replan-from-version",
@@ -1553,6 +1555,13 @@
               "input_hash": {
                 "type": "string"
               },
+              "lifecycle_status": {
+                "type": "string",
+                "enum": [
+                  "draft"
+                ],
+                "description": "重排只产出待审批候选：成功时恒为 draft（需人工 Apply Gate 才能 approved/released），失败时不返回该字段。"
+              },
               "replayed": {
                 "type": "boolean"
               }
@@ -1566,11 +1575,13 @@
           }
         }
       },
+      "side_effect": "local_write",
+      "review_gate": "apply",
       "execution": "sync"
     },
     {
       "name": "get_m5_integration_contracts",
-      "description": "查询 M5 与 M1-M4、M6-M8 按方向和交付项拆分的接口需求、readiness（available/partial/proposed/blocked/current_none）及缺口。返回的 JSON Schema 只是 M5 侧载荷结构，不代表对端接口、生成、持久化、投递或回执已经可用。",
+      "description": "查询 M5 与 M1-M4、M6-M8 按方向和交付项拆分的接口需求、readiness（available/partial/proposed/blocked/current_none）及缺口。本工具返回的是 M5 侧**静态声明的契约目录**：目录内容写死在实现里，不探活对端、不读实时集成状态、也不校验 schema 是否已被对端实现，因此 readiness 只是声明值，不代表对端接口当前可用。返回的 JSON Schema 只是 M5 侧载荷结构，不代表对端接口、生成、持久化、投递或回执已经可用。",
       "http": {
         "method": "GET",
         "path": "/api/v1/contracts"
@@ -1769,7 +1780,7 @@
     },
     {
       "name": "search_m5_knowledge",
-      "description": "检索 M5 内置知识库中与给定特征相似的历史排程案例（RAG）。当用户问‘类似订单以前怎么排的’‘有没有相似场景的经验’‘这种产品排程要注意什么’时使用。输入特征描述当前场景，返回 top_k 个最相似的历史案例及结果。",
+      "description": "检索 M5 内置知识库中与给定特征相似的历史排程案例（RAG）。当用户问‘类似订单以前怎么排的’‘有没有相似场景的经验’‘这种产品排程要注意什么’时使用。输入特征描述当前场景，返回 top_k 个最相似的历史案例及结果。相似度是确定性的特征字段重叠度（命中的查询字段对 ÷ 查询字段对总数，0..1），逐条以 match_score 返回；outcome_filter/tag_filter 是硬过滤，先过滤再打分排序。没有可比较的案例特征时按记录时间倒序返回，并在 similarity_basis 标注 recency。",
       "http": {
         "method": "POST",
         "path": "/api/v1/knowledge/search"
@@ -1869,6 +1880,10 @@
           "plan_version"
         ],
         "properties": {
+          "features": {
+            "type": "object",
+            "description": "案例特征（产品类型、订单规模、交期紧迫度等）。落库后供 search_m5_knowledge 做字段重叠度检索；省略则该案例不参与特征打分。"
+          },
           "plan_version": {
             "type": "string",
             "minLength": 1
@@ -1997,11 +2012,13 @@
           }
         }
       },
+      "side_effect": "local_write",
+      "review_gate": "authorization",
       "execution": "sync"
     },
     {
       "name": "prepare_m5_department_message",
-      "description": "根据排程、异常或执行反馈的结构化证据起草企业部门消息并持久化为 pending_approval。LLM 只可生成 subject/body；部门、渠道、收件人、证据与幂等键由调用方提供。本工具不会审批或直接发送。",
+      "description": "根据排程、异常或执行反馈的结构化证据起草企业部门消息并持久化为 pending_approval。LLM 只可生成 subject/body；部门、渠道、收件人、证据与幂等键由调用方提供。本工具不会审批或直接发送。审批由人工/受信外部系统在 M5 服务侧完成：Agent 工具面刻意不提供审批工具（LLM 或 Agent 不得代替审批人），因此本工具产出的草稿会一直停留在 pending_approval，直到外部审批通过。",
       "http": {
         "method": "POST",
         "path": "/api/v1/messages/prepare",
@@ -2159,11 +2176,13 @@
           }
         }
       },
+      "side_effect": "local_write",
+      "review_gate": "authorization",
       "execution": "sync"
     },
     {
       "name": "get_m5_department_message",
-      "description": "查询部门消息草稿及人工审批状态。消息只有 approved 后才会进入耐久 Outbox；LLM 或 Agent 无权代替审批人。",
+      "description": "查询部门消息草稿及人工审批状态：status=pending_approval 表示等待人工/受信外部系统审批，approved 表示已进入耐久 Outbox。审批动作只由人工/外部系统在 M5 服务侧执行，Agent 工具面刻意不提供审批工具，LLM 或 Agent 无权代替审批人；本工具是只读读回，不能改变审批状态。",
       "http": {
         "method": "GET",
         "path": "/api/v1/messages/{draft_id}"
@@ -2207,7 +2226,7 @@
     },
     {
       "name": "get_m5_department_message_delivery",
-      "description": "查询已批准部门消息的耐久 Outbox 投递状态、尝试次数和 provider message id。不会触发重试或绕过审批。",
+      "description": "查询已批准部门消息的耐久 Outbox 投递状态、尝试次数和 provider message id。不会触发重试或绕过审批。Outbox 记录只在草稿经人工/受信外部系统审批通过后才生成；草稿未审批时本工具返回 OUTBOX_NOT_FOUND（可恢复状态，不是故障，也不代表投递失败）。",
       "http": {
         "method": "GET",
         "path": "/api/v1/messages/outbox/{outbox_id}"
@@ -2493,7 +2512,7 @@
     },
     {
       "name": "run_m5_intelligent_schedule",
-      "description": "对排程输入执行非持久化分析，并可选生成 LLM 解释、审计文字和决策建议。它不会创建可审批计划；生产生命周期必须先调用 solve_scheduling 持久化候选。",
+      "description": "对排程输入执行非持久化分析，并可选生成 LLM 解释、审计文字和决策建议。它不会创建可审批计划；生产生命周期必须先调用 solve_scheduling 持久化候选。定位：诊断/解释/建议入口（不落库）。禁用场景：不得用它替代 solve_scheduling 产出可审批计划，不得用于生产发布或派工；需要持久化候选用 solve_scheduling，需要事件驱动重排用 replan_m5_schedule。",
       "http": {
         "method": "POST",
         "path": "/api/v1/schedules/intelligent",
@@ -2824,29 +2843,33 @@
           "enable_advise": {
             "type": "boolean",
             "default": false,
-            "description": "是否生成决策建议。"
+            "description": "是否生成决策建议。与 advise_m5_schedule 共用同一规则实现（source=rule_based）。"
           },
           "enable_knowledge_record": {
             "type": "boolean",
             "default": false,
-            "description": "兼容开关；智能排程不会写入未绑定案例。请先持久化计划，再调用 record_m5_knowledge。"
+            "deprecated": true,
+            "description": "已弃用（不生效）：智能排程不会写入未绑定案例，恒返回 knowledge_case.persisted=false。替代：先持久化计划（solve_scheduling），再调用 record_m5_knowledge。"
           },
           "auto_replan_on_validation_fail": {
             "type": "boolean",
             "default": false,
-            "description": "兼容字段；校验失败现在会失败关闭，不再隐式切换到 baseline。"
+            "deprecated": true,
+            "description": "已弃用（不生效）：校验失败现在失败关闭，不再隐式切换到 baseline，恒返回 auto_replanned=false。替代：显式调用 replan_m5_schedule 或补齐权威事实后重试。"
           },
           "knowledge_tags": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "兼容字段；本工具不直接沉淀，标签应传给 record_m5_knowledge。"
+            "deprecated": true,
+            "description": "已弃用（不生效）：本工具不沉淀案例，该字段被忽略。替代：把标签传给 record_m5_knowledge.tags。"
           },
           "knowledge_note": {
             "type": "string",
             "default": "",
-            "description": "兼容字段；本工具不直接沉淀，备注应传给 record_m5_knowledge。"
+            "deprecated": true,
+            "description": "已弃用（不生效）：本工具不沉淀案例，该字段被忽略。替代：把备注传给 record_m5_knowledge.note。"
           }
         }
       },
@@ -3044,6 +3067,8 @@
           }
         }
       },
+      "side_effect": "external_write",
+      "review_gate": "authorization",
       "execution": "sync"
     },
     {
@@ -3155,7 +3180,7 @@
     },
     {
       "name": "ingest_m5_planning_snapshot",
-      "description": "把上游（ERP/MES/WMS/PLM 或人工）的规划数据快照写入 M5：订单、工艺路线、资源、工装等。当需要把外部系统的最新主数据/订单数据灌进 M5 再排程时使用，是 M5 接收上游数据的集成入口。replace_existing=true 会覆盖同 scenario 的旧快照。",
+      "description": "把上游（ERP/MES/WMS/PLM 或人工）的规划数据快照写入 M5：订单、工艺路线、资源、工装等。当需要把外部系统的最新主数据/订单数据灌进 M5 再排程时使用，是 M5 接收上游数据的集成入口。replace_existing=true 会覆盖同 scenario 的旧快照；本仓实现不支持 false 的增量合并，传 false 会 fail-closed（UNSUPPORTED_INCREMENTAL_MERGE），不会静默降级成整包覆盖。",
       "http": {
         "method": "POST",
         "path": "/api/v1/integrations/snapshots",
@@ -3271,7 +3296,7 @@
           "replace_existing": {
             "type": "boolean",
             "default": true,
-            "description": "true 整包替换该场景；false 按业务稳定键增量合并，未提供的实体保持不变。"
+            "description": "true 整包替换该场景。本仓实现只支持整包替换：传 false 不会静默降级为整包覆盖，而是 fail-closed 返回 BLOCKED_INPUT/UNSUPPORTED_INCREMENTAL_MERGE（避免删掉未提供的实体）；增量合并需调用方先读回当前快照、合并后整包提交。"
           },
           "orders": {
             "type": "array"
@@ -3559,11 +3584,13 @@
           }
         }
       },
+      "side_effect": "local_write",
+      "review_gate": "data",
       "execution": "sync"
     },
     {
       "name": "generate_m5_material_procurement_plan",
-      "description": "基于排程请求生成物料采购计划（哪些料够、哪些要采、采多少、何时要）。当用户问‘排这单要采购哪些料’‘算一下采购需求’‘物料采购计划’时使用。输入与 solve_scheduling 相同的订单/工艺/资源，输出采购计划视角的结果。",
+      "description": "基于排程请求生成物料采购计划（哪些料够、哪些要采、采多少、何时要）。当用户问‘排这单要采购哪些料’‘算一下采购需求’‘物料采购计划’时使用。输入与 solve_scheduling 相同的订单/工艺/资源，输出采购计划视角的结果。结果只是 proposal：不落库、不写库存或采购事实。缺 order_kitting 齐套事实或某齐套物料的可用量事实时 fail-closed（MISSING_KITTING_FACTS / MISSING_MATERIAL_AVAILABILITY），不会按订单行编造占位缺口、也不把缺失可用量当成 0。定位：只读的采购需求视角。禁用场景：不得当作库存/采购事实写入通道（写入走 M3/M4 的正式工具），也不得用它替代 solve_scheduling 产生可审批计划。",
       "http": {
         "method": "POST",
         "path": "/api/v1/materials/procurement-plan",
