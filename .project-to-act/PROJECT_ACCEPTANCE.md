@@ -4,10 +4,10 @@
 
 ## 当前验收结论
 
-- 结论：V2-M0 方案书阶段已验收（三本书用户确认冻结 v1.0）
-- 验收范围：V2-M0
+- 结论：V2 工具迁移 6 分片（M0–M5）已全合入集成分支并全绿（E-004）；F-004 完成、F-006 部分完成
+- 验收范围：V2-M3 注册批次（119 工具）+ 集成收口
 - 最后检查：2026-09-09
-- 遗留问题：无（A-002~A-005 待后续阶段）
+- 遗留问题：workflow 路径未达 m5.released（报告 §4）；B-001 批准前已写；B-002 门漂移
 
 ## 验收标准
 
@@ -15,8 +15,8 @@
 |---|---|---|---|---|
 | A-001 | 方案书阶段：书一/书二/书三经用户逐卡/逐章审核通过并 commit 入库 | 通过 | 用户会话确认 + git 提交记录 | E-001 |
 | A-002 | 骨架阶段：LangGraph 唯一执行路径可用，API 契约兼容冒烟通过 | 基本通过 | pytest 全绿+API 冒烟（E-002）；逐字段流式契约快照留 M5 录制比对 | E-002 |
-| A-003 | 注册阶段：119 工具+8 技能台账登记完整，五项 checklist 全过 | 待检查 | 注册审查台账 + 契约测试 | 无 |
-| A-004 | 联调阶段：W913 workflow 路径 m5.released 且 free 路径全链跑通 | 待检查 | W913 复测证据（沿用旧测试方法 run_w913_free.py 口径） | 无 |
+| A-003 | 注册阶段：119 工具+8 技能台账登记完整，五项 checklist 全过 | 通过 | 全量 pytest 642 passed/4 skipped + check_contracts exit 0 + Gate 覆盖核对（44 需补→42 覆盖/1 缺口） | E-004 |
+| A-004 | 联调阶段：W913 workflow 路径 m5.released 且 free 路径全链跑通 | 部分通过 | free 路径已通（`ingest_m5_planning_snapshot` completed）；workflow 路径实测至 M5 solve，未达 released，卡点留证 | E-004 |
 | A-005 | 自进化阶段：四接缝（观察/注入消费/使用反馈/红线周期）测试全绿 | 待检查 | pytest 分项 + 演示证据 | 无 |
 
 ## 证据索引
@@ -26,6 +26,7 @@
 | E-001 | 2026-09-09 | 用户会话确认三本方案书并批准按文档完整开发（/goal） | 通过 | commit 841447a（三书齐） | 三本书冻结 v1.0，成为代码阶段唯一设计依据 | 本仓库 git 历史 | 长期 |
 | E-002 | 2026-09-09 | pytest -q → 376 passed/4 skipped；API 冒烟：POST /runs=200(chat completed)、GET /runs/{id}=completed、resume 无 Gate=409、NDJSON 流式 run_start→assistant_delta→state_snapshot→run_done、/tools /skills /health=200 | 通过 | 分支 feat/orchestrator-skeleton-20260909 | V2-M1/M2 代码验收；流式逐字段契约快照与 W913 全链留 M5 | 本仓库 git 历史 | 长期 |
 | E-003 | 2026-09-09 | V2-M3 开工门基线复验：.venv(Py3.12.10) pytest -q → 376 passed/4 skipped(120.7s) 对齐 E-002；注册目录对账 119 specs=115 manifest+4 local、四态 30/53/1/35、CatalogView=84 无 UNBOUND/DEPRECATED 泄漏、production 降级 OK、8 技能一致；路由专项单测 18/18；活体冒烟 9 用例×2 配置（确定性回退 + DeepSeek 真实 LLM 注入 QwenRouter 同码路径，8027 临时实例）8/9：chat/free/显式一票否决/确定性回退 1-2/Gate 挂起/NDJSON 流全通，LLM 提案层经真实模型走通（DeepSeek 1-3s、本地 Qwen qwen3.8-27b 49-76s），_validate 护栏对不可见工具/未知技能有效 | 通过（开工门开启；4 项发现转 R1 处理清单） | 分支 feat/orchestrator-skeleton-20260909（账本行未提交，随 R1 首 PR 入库） | 发现：① /tools 端点暴露全量 119 含 5 个红线名且 run_mrp_procurement_plan 标 bound=true 与绑定表 UNBOUND 矛盾；② 显式非法参数（未知 workflow/不可见工具）返回 HTTP 500 而非 4xx 结构化错误；③ LLM workflow 提案闭环缺失——system prompt 未注入 KNOWN_WORKFLOWS/未要求 workflow_id，_validate 对 route=workflow 必拒，实际仅靠附件确定性规则兜底；④ 本地 Qwen 实测延迟 49-76s 超默认 QWEN_TIMEOUT_S=45s，且 classify 空 key 即 not_configured（本地模型需占位 key，guide_chat 有占位而 classify 无）。另：默认 python=3.10 与 .venv 并存，误用致 6 failed（缺 pypdf+langgraph 版本差异），基线解释器=.venv | 会话记录+本表（临时脚本在 %TEMP%\yunpai-verify） | 至 R1 收口 |
+| E-004 | 2026-09-09 | 集成收口验收：全量 pytest -q → 642 passed/4 skipped（exit 0）；check_contracts exit 0；v2_metrics：handlers 114、bound_local 100、bound_http 13、sandbox 0、unbound 6、visible 109、rules 51；Gate 覆盖 44 需补→42 覆盖/1 缺口；W913 free 路径 completed、workflow 路径卡点留证 | 通过（F-004 完成；F-006 部分完成） | 分支 feat/migration-integration-20260909（见报告 §7 最新 sha） | 证据：`_migration/REPORT-MIG-INTEGRATION.md`、`_migration/exec/GATE-COVERAGE-INT2.md`、`_localrun/sim/int2-w913-*.json` | 长期 |
 
 ## Gate 记录
 
@@ -36,3 +37,4 @@
 
 | 日期 | 检查范围 | 证据 ID | 结果 | 遗留问题 | 结论 |
 |---|---|---|---|---|---|
+| 2026-09-09 | V2 工具迁移集成收口（6 分片 + fact_gateway + W913 双路径 + Gate 覆盖 + 账本） | E-004 | 通过（642 passed/4 skipped；check_contracts exit 0） | workflow 路径未达 m5.released（报告 §4）；B-001/B-002 待「先改书再改码」 | F-004 完成、F-006 部分完成 |

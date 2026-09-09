@@ -18,9 +18,9 @@
 | F-001 | 编排重构方案书（三本） | 用户会话 2026-09-09 | P0 | 已完成 | 已验收（用户确认） | - | 书一/书二/书三完成，用户审核通过并 commit 入库 | docs/01、docs/02、docs/03 | E-001 |
 | F-002 | 编排骨架搭建 | docs/01 §13 | P0 | 已完成 | 代码验收（E-002） | F-001 | LangGraph 图跑通 chat/free/Gate interrupt-resume；API 冒烟；checkpointer 可用 | docs/02 §1-§3、§8 | E-002 |
 | F-003 | 可复用资产迁移 | docs/01 §11 | P0 | 已完成 | 代码验收（E-002） | F-002 | 合同/注册中心/存储/识别/LLM/进化包+运行库迁入，随迁测试全绿 | docs/02 §9-§11 | E-002 |
-| F-004 | 工具与技能逐个审查注册 | docs/01 §12 | P0 | 已规划 | - | F-003 | 119 工具（115 manifest+4 本地）+8 技能台账全登记，五项 checklist 逐个过审 | docs/02 §7 | - |
+| F-004 | 工具与技能逐个审查注册 | docs/01 §12 | P0 | 已完成 | 代码验收（E-004） | F-003 | 119 工具（115 manifest+4 本地）+8 技能台账全登记，五项 checklist 逐个过审 | docs/02 §7 | E-004 |
 | F-005 | 自进化接线与三缺口补全 | docs/01 §10 | P1 | 已规划 | - | F-004 | 观察/注入消费/使用反馈/红线周期四接缝测试全绿 | docs/02 §11 | - |
-| F-006 | 联调验收（W913 双路径） | docs/01 §13 | P0 | 已规划 | - | F-005 | workflow 路径 m5.released；free 路径全链跑通旧死点 ingest_m5_planning_snapshot；证据入库 | docs/02 §13 | - |
+| F-006 | 联调验收（W913 双路径） | docs/01 §13 | P0 | 进行中 | 部分验收（E-004） | F-005 | free 路径已跑通旧死点 `ingest_m5_planning_snapshot`（run-92643358215248ff854c92eb3c6465a0 → completed/snapshots_stored）；workflow 路径未达 m5.released（卡点见 E-004 与 REPORT-MIG-INTEGRATION.md §4） | docs/02 §13 | E-004 |
 
 ## 功能变更历史
 
@@ -28,3 +28,5 @@
 |---|---|---|---|---|---|
 | 2026-09-09 | F-001 | 立项：两本方案书撰写 | 编排重构的书面依据，审核后成为代码阶段唯一事实源 | 无 | 用户会话 |
 | 2026-09-09 | F-001 | 扩充为三本：新增书三《功能需求对齐手册》（docs/03），任务表 xlsx 改号 04；书二保留不动 | 用户反馈：书二偏架构视角，需一本"每个功能是什么/为了什么/与需求对齐"的手册，须多参照需求文档 | 无 | 用户会话 |
+| 2026-09-09 | F-004 | 6 分片（M0–M5）全合入集成分支：119 工具全部登记，`handlers 85→114`、`bound_local 30→100`、`unbound 35→6`、`visible 84→109`、`rules 5→51`；Gate 覆盖核对 44 项需补 → 已覆盖 42 / 缺口 1（`data_import_commit` 合同门漂移） | 迁移主体完成；缺口与 R8 已知缺口（批准前已写）按「先改书再改码」登记 | E-004 | 集成收口（INT2） |
+| 2026-09-09 | F-006 | free 路径实测跑通旧死点 `ingest_m5_planning_snapshot`（completed / `snapshots_stored`）；workflow 路径实测至 M5 solve，未达 `m5.released`，4 类卡点逐条留证 | 联调验收部分完成，卡点见 `_migration/REPORT-MIG-INTEGRATION.md` §4 | E-004 | 集成收口（INT2） |
