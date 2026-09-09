@@ -271,7 +271,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "procurement"
     },
     {
       "name": "list_m4_purchase_suggestions",
@@ -420,7 +422,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "authorization"
     },
     {
       "name": "list_m4_purchase_orders",
@@ -578,7 +582,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "authorization"
     },
     {
       "name": "approve_m4_purchase_order",
@@ -644,7 +650,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "authorization"
     },
     {
       "name": "request_changes_m4_purchase_order",
@@ -710,7 +718,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "authorization"
     },
     {
       "name": "generate_m4_purchase_inquiry_message",
@@ -809,7 +819,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "authorization"
     },
     {
       "name": "send_m4_purchase_order",
@@ -854,7 +866,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "authorization"
     },
     {
       "name": "create_m4_supplier_reply",
@@ -917,7 +931,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "authorization"
     },
     {
       "name": "parse_m4_supplier_reply",
@@ -983,7 +999,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "authorization"
     },
     {
       "name": "confirm_m4_supplier_reply",
@@ -1105,7 +1123,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "authorization"
     },
     {
       "name": "list_m4_suppliers",
@@ -1236,7 +1256,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "authorization"
     },
     {
       "name": "update_m4_supplier",
@@ -1321,7 +1343,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "authorization"
     },
     {
       "name": "list_m4_tracking",
@@ -1384,7 +1408,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "authorization"
     },
     {
       "name": "list_m4_purchase_alerts",
@@ -1492,7 +1518,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "authorization"
     },
     {
       "name": "query_m4_material_supply_snapshot",
@@ -1668,7 +1696,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "authorization"
     },
     {
       "name": "list_m4_material_supply_events",
@@ -2068,7 +2098,9 @@
           }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "authorization"
     },
     {
       "name": "receive_m4_schedule_impact_proposal",

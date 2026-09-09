@@ -131,6 +131,22 @@ def test_m4_all_write_tools_are_gated_and_never_auto_approved():
     assert rules.AUTO_APPROVE_ALLOWED is False
 
 
+def test_m4_write_tools_declare_side_effect_and_review_gate():
+    """R8 口径：RULES 条目 **+** manifest ``side_effect``/``review_gate`` 双写。
+
+    V2 图只消费 ``RULES``（``rules.evaluate`` 忽略 spec），但契约必须如实声明副作用，
+    且与 RULES 门型**一致**（防漂移）。本用例同时是 ``check_contracts.py --strict``
+    W1/W2 的本地锁。
+    """
+    registry = build_default_registry()
+    write_tools = set(AUTHORIZATION_GATED) | {"import_m4_purchase_suggestions_json"}
+    for tool in sorted(write_tools):
+        spec = registry.specs[tool]
+        assert spec.side_effect == "local_write", tool
+        assert spec.review_gate in {"authorization", "procurement"}, tool
+        assert rules.gate_type_for(tool, spec) == spec.review_gate, tool
+
+
 # ---------------------------------------------------------------------------
 # P0-5：send_m4_purchase_order 的远程禁令必须由 registry 真正执行
 # ---------------------------------------------------------------------------
