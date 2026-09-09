@@ -147,7 +147,7 @@
       },
       "execution": "sync",
       "side_effect": "external_write",
-      "review_gate": "candidate"
+      "review_gate": "data"
     },
     {
       "name": "data_import_rollback",

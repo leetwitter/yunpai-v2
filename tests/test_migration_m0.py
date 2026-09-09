@@ -463,6 +463,50 @@ def test_data_import_commit_keeps_fail_rule_and_blocked_input_path():
     assert blocked and blocked[0]["gate"] == "blocked_input"
 
 
+def test_data_import_commit_gate_declaration_matches_runtime_paths():
+    """R21 收口：commit 不自开 candidate 门——发布人工门在上游 `data_import_run`。
+
+    三条断言锁住真实语义（此前 manifest 声明 `candidate` 属惰性漂移，图内零消费）：
+    1. 成功路径**不开门**（发布是批准后的机械动作，同一件事不重复问人）；
+    2. `BLOCKED_INPUT` → `blocked_input` 可恢复门，且门里带 `message`/`missing_fields`（R20）；
+    3. manifest `review_gate` 由漂移值 `candidate` 对齐为 `data`（→ `blocked_input`，R20），
+       而**发布人工门在 `data_import_run` 的 candidate 门**。
+    """
+    from yunpai_orchestrator.reviewer.gates import make_gate
+
+    registry = build_default_registry()
+    commit_spec = registry.specs["data_import_commit"]
+    run_spec = registry.specs["data_import_run"]
+
+    # 声明与真实语义一致：写保留（external_write），门型 = blocked_input（data 门归一化）
+    assert commit_spec.side_effect == "external_write"
+    assert commit_spec.review_gate == "data"
+    assert rules.gate_type_for("data_import_commit", commit_spec) == "blocked_input"
+
+    # ① 成功路径不开任何门
+    assert rules.evaluate("data_import_commit",
+                          {"success": True, "status": "published", "master_counts": {}}) == []
+
+    # ② 输入缺口 → blocked_input 可恢复门（含可诊断字段）
+    blocked = rules.evaluate("data_import_commit", {
+        "success": False, "code": "BLOCKED_INPUT",
+        "errors": [{"code": "PENDING_REVIEW", "message": "batch batch-1 仍有 1 个候选未裁决，禁止 commit"}],
+        "data": {"missing_fields": ["data_import_resolve.action"]},
+    })
+    assert [f["gate"] for f in blocked] == ["blocked_input"]
+    gate = make_gate(blocked[0]["gate"], "data_import_commit", blocked[0]["reason"],
+                     code=blocked[0]["code"], message=blocked[0]["message"],
+                     missing_fields=blocked[0]["missing_fields"])
+    assert gate["message"] and "未裁决" in gate["message"]
+    assert gate["missing_fields"] == ["data_import_resolve.action"]
+
+    # ③ 发布人工门在上游 data_import_run（candidate），不在 commit（R21：不重复开门）
+    assert rules.gate_type_for("data_import_run", run_spec) == "candidate"
+    assert rules.gate_type_for("data_import_commit", commit_spec) != "candidate"
+    assert all(f.get("gate") != "candidate"
+               for f in rules.evaluate("data_import_commit", {"success": True, "status": "published"}))
+
+
 # ------------------------------------------------- C3/C4 装配与读口
 
 def _state(**request) -> dict:
