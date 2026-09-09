@@ -45,6 +45,7 @@ import os
 import sqlite3
 from typing import Any
 
+from .fact_gateway import normalize_body as _gw_normalize_body
 from .m1_domain import M1Store
 
 # 知识搜索覆盖的 canonical entity_type（标准实体集合）
@@ -123,14 +124,12 @@ def _payload_of(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_body(payload: dict[str, Any]) -> dict[str, Any]:
-    """``payload.attributes`` 键并入顶层、顶层优先（business_catalog 形状归一）。"""
-    body = payload.get("payload") if isinstance(payload.get("payload"), dict) else payload
-    if not isinstance(body, dict):
-        return {}
-    attributes = body.get("attributes")
-    if isinstance(attributes, dict):
-        return {**attributes, **body}
-    return body
+    """``payload.attributes`` 键并入顶层、顶层优先（business_catalog 形状归一）。
+
+    统一实现见 ``fact_gateway.normalize_body``；本处沿用 M1 原口径
+    ``envelope_keys=frozenset()``（业务体即入参本身，不做信封键剥离）。
+    """
+    return _gw_normalize_body(payload, envelope_keys=frozenset())
 
 
 def _flatten_text(value: Any) -> str:

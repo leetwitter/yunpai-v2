@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any
 
+from .fact_gateway import split_envelope
 from .m3_m4_tooling import M3_LEGACY_DECISIONS
 from .m3_store import M3Store
 
@@ -132,22 +133,11 @@ def _unpack(record: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """(payload, identity) split of a canonical record envelope; tolerates
     flat records too (same policy as m0_facts._envelope_fields).
 
-    归一化：``business_catalog`` 形态的实体把业务字段放在 ``payload.attributes``
-    里，这里做一次小归一化（attributes 键并入顶层、**顶层优先**），不新增事实。
+    形状归一（``payload.attributes`` 并入顶层、**顶层优先**）统一由
+    ``fact_gateway.split_envelope`` 实现；M3 原口径额外删除合并后的
+    ``attributes`` 键（``drop_attributes=True``），不新增事实。
     """
-    identity = record.get("identity")
-    if not isinstance(identity, dict):
-        identity = {}
-    payload = record.get("payload")
-    if not isinstance(payload, dict):
-        payload = {key: value for key, value in record.items()
-                   if key not in {"identity", "entity_type", "evidence", "idempotency_key",
-                                  "review_status", "reviewed_by", "schema_version", "source",
-                                  "tenant_id", "canonical_key", "filename"}}
-    attributes = payload.get("attributes")
-    if isinstance(attributes, dict):
-        payload = {**attributes, **{key: value for key, value in payload.items() if key != "attributes"}}
-    return payload, identity
+    return split_envelope(record, drop_attributes=True)
 
 
 def _business_key(entity: dict[str, Any], identity: dict[str, Any], payload: dict[str, Any],

@@ -32,6 +32,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from typing import Any
 
+from .fact_gateway import read_entities
 from .models import RunState, summarize
 from .planning_snapshot import SIX_CLASS_BUNDLE, blocked_input, snapshot_counts
 
@@ -297,29 +298,12 @@ def _m0_local_entities(entity_type: str, tenant_id: str, db_path: str) -> list[d
     """进程内读 M0 canonical（``YUNPAI_M0_DB``）——唯一允许的本地读口。
 
     父会话 M0 读口裁决（2026-09-09）：一律走 ``m0_backend.M0Store.list_entities``，
-    **禁止**直连 sqlite3 读 ``canonical_entities``。V2 没有 INT 的 ``fact_gateway``，
-    因此读取处做一次形状归一化：``payload.attributes`` 并入顶层（顶层优先），
-    兼容 SOP 文档把 route_steps 放在 attributes 下的形状；设备/工位/人员/日历
-    在 M0 是平铺形状，归一化对它们是无操作。
+    **禁止**直连 sqlite3 读 ``canonical_entities``；形状归一（``payload.attributes``
+    并入顶层、顶层优先，兼容 SOP 文档把 route_steps 放在 attributes 下的形状；
+    设备/工位/人员/日历在 M0 是平铺形状，归一化对它们是无操作）统一由
+    ``fact_gateway.read_entities`` 实现（集成收口 1.1，单点化）。
     """
-    from .m0_backend import M0Store
-
-    rows = M0Store(db_path).list_entities(entity_type, tenant_id=tenant_id).get("entities") or []
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        payload = row.get("payload_json")
-        if isinstance(payload, str):
-            try:
-                payload = json.loads(payload)
-            except ValueError:
-                continue
-        if not isinstance(payload, dict):
-            continue
-        attributes = payload.get("attributes") if isinstance(payload.get("attributes"), dict) else {}
-        out.append({"canonical_key": row.get("canonical_key"), **attributes, **payload})
-    return out
+    return read_entities(entity_type, tenant_id, db_path)
 
 
 def _read_m0_entities(state: RunState, entity_type: str) -> list[dict[str, Any]]:

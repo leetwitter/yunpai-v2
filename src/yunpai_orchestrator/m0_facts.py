@@ -14,6 +14,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from .fact_gateway import split_envelope
+
 
 def _store_path() -> str | None:
     path = os.getenv("YUNPAI_M0_DB") or ""
@@ -64,21 +66,10 @@ def _envelope_fields(envelope: dict[str, Any]) -> tuple[dict[str, Any], dict[str
     V2 读口归一化（M0 分片）：`business_catalog` 落库的 canonical 记录把
     ``route_steps`` 等业务事实放在 ``payload.attributes`` 下
     （`business_catalog.py:1131-1138`），而 envelope 写入方放在 ``payload`` 顶层。
-    这里按「attributes 的键并入顶层、同名以顶层优先、attributes 原键保留」统一
-    两种形状（与 `_wt/REALFLOW/.../fact_gateway.normalize_entity` 同口径）。
+    统一口径「attributes 的键并入顶层、同名以顶层优先、attributes 原键保留」
+    由 ``fact_gateway.split_envelope`` 实现（集成收口 1.1，单点化）。
     """
-    identity = envelope.get("identity")
-    if not isinstance(identity, dict):
-        identity = {}
-    payload = envelope.get("payload")
-    if not isinstance(payload, dict):
-        payload = {key: value for key, value in envelope.items() if key not in {"identity", "entity_type", "evidence", "idempotency_key", "review_status", "reviewed_by", "schema_version", "source", "tenant_id", "canonical_key", "filename"}}
-    attributes = payload.get("attributes")
-    if isinstance(attributes, dict):
-        merged = dict(attributes)
-        merged.update(payload)  # 同名以顶层优先；payload 里的 attributes 原键保留
-        payload = merged
-    return payload, identity
+    return split_envelope(envelope)
 
 
 def _matches_product(envelope: dict[str, Any], product_code: str) -> bool:

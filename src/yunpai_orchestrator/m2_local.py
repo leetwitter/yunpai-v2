@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from .fact_gateway import M2_ENVELOPE_KEYS, normalize_body
 from .m0_sandbox import utc_now
 
 
@@ -114,12 +115,8 @@ _ALIASES = {
 _LIST_LIMIT_MIN = 1
 _LIST_LIMIT_MAX = 200
 
-#: canonical 记录信封里不属于业务体的键（``_canonical_body`` 的兜底拆分口径）。
-_CANONICAL_ENVELOPE_KEYS = frozenset({
-    "identity", "entity_type", "evidence", "idempotency_key", "review_status",
-    "reviewed_by", "schema_version", "source", "tenant_id", "canonical_key",
-    "filename", "attributes",
-})
+#: canonical 记录信封里不属于业务体的键（= ``fact_gateway.M2_ENVELOPE_KEYS``，单点定义）。
+_CANONICAL_ENVELOPE_KEYS = M2_ENVELOPE_KEYS
 
 
 def _text(v: Any) -> str:
@@ -676,20 +673,13 @@ async def generate_m2_sop(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[
 
 
 def _canonical_body(record: dict[str, Any]) -> dict[str, Any]:
-    """canonical 记录 → 业务体（V2 归一化：``payload.attributes`` 并入顶层，顶层优先）。
+    """canonical 记录 → 业务体（形状归一，统一实现见 ``fact_gateway.normalize_body``）。
 
-    V2 没有 INT 的 ``fact_gateway.py``：BOM 的 ``lines`` 在 ``payload.lines``
-    （``business_catalog.py:1088``），SOP document 的 ``route_steps`` 在
-    ``payload.attributes.route_steps``（``business_catalog.py:1138``）。
+    BOM 的 ``lines`` 在 ``payload.lines``（``business_catalog.py:1088``），SOP document
+    的 ``route_steps`` 在 ``payload.attributes.route_steps``（``business_catalog.py:1138``）。
+    本处沿用 M2 原口径 ``M2_ENVELOPE_KEYS``：扁平记录兜底时连 ``attributes`` 一起剥离。
     """
-    payload = record.get("payload") if isinstance(record, dict) else None
-    if not isinstance(payload, dict):
-        payload = {key: value for key, value in record.items()
-                   if key not in _CANONICAL_ENVELOPE_KEYS}
-    attributes = payload.get("attributes")
-    if isinstance(attributes, dict):
-        return {**attributes, **payload}  # 顶层优先
-    return dict(payload)
+    return normalize_body(record, envelope_keys=M2_ENVELOPE_KEYS)
 
 
 def _canonical_bom_lines(tenant_id: str, warnings: list[str] | None = None) -> list[dict[str, Any]]:
