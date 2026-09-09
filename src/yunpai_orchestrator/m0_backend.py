@@ -223,6 +223,120 @@ class M0Store:
             "entities": entities,
         }
 
+    # ── M0 分片 C1 增量补：canonical 候选裁决 / 发布（迁自 INT m0_backend.py:227-335）──
+    # 这 3 个方法原属 INT 版（V2 版是子集）；`m0_import_store.CanonicalImportStore`
+    # 的 resolve/publish 依赖它们，缺失会 AttributeError。
+
+    def resolve_candidate(self, batch_id: str, candidate_id: str, *, action: str,
+                          actor: str, mode: str = "standard", reason: str = "") -> dict[str, Any]:
+        """per-candidate 人工裁决（Batch B）：写 approval_records + 更新候选状态。
+
+        - action 仅 approve | reject；重复裁决抛 ValueError("already decided…")；
+        - 批次/候选不存在抛 ValueError（与现有 handler 语义一致）。
+        """
+        if action not in {"approve", "reject"}:
+            raise ValueError("resolve action 必须为 approve|reject")
+        with self._connect() as conn:
+            batch = conn.execute("SELECT batch_id FROM import_batches WHERE batch_id=?", (batch_id,)).fetchone()
+            if batch is None:
+                raise ValueError(f"batch not found: {batch_id}")
+            candidate = conn.execute(
+                "SELECT candidate_id, status FROM import_candidates WHERE batch_id=? AND candidate_id=?",
+                (batch_id, candidate_id),
+            ).fetchone()
+            if candidate is None:
+                raise ValueError(f"candidate not found: {candidate_id}")
+            existing = conn.execute(
+                "SELECT 1 FROM approval_records WHERE batch_id=? AND candidate_id=?",
+                (batch_id, candidate_id),
+            ).fetchone()
+            if existing:
+                raise ValueError(f"already decided: candidate {candidate_id} in batch {batch_id}")
+            approval_id = uuid4().hex
+            conn.execute("INSERT INTO approval_records VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                         (approval_id, batch_id, candidate_id, actor, action, mode, reason, _now()))
+            conn.execute("UPDATE import_candidates SET status=? WHERE candidate_id=?",
+                         (("approved" if action == "approve" else "rejected"), candidate_id))
+        return {"batch_id": batch_id, "candidate_id": candidate_id,
+                "decision": action, "actor": actor, "status": "resolved"}
+
+    def list_candidates(self, batch_id: str) -> dict[str, Any]:
+        """批次候选明细（含来源文件名/sha256 与解析后的候选 JSON），供 status/preview 使用。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT c.candidate_id, c.entity_type, c.status AS candidate_status, "
+                "c.candidate_json, d.filename, d.sha256 "
+                "FROM import_candidates c JOIN source_documents d ON d.document_id=c.document_id "
+                "WHERE c.batch_id=? ORDER BY c.rowid",
+                (batch_id,),
+            ).fetchall()
+        candidates = []
+        for row in rows:
+            item = dict(row)
+            raw = item.pop("candidate_json")
+            try:
+                item["candidate"] = json.loads(raw)
+            except ValueError:
+                item["candidate"] = {}
+            candidates.append(item)
+        return {"batch_id": batch_id, "count": len(candidates), "candidates": candidates}
+
+    def publish_approved(self, batch_id: str, *, actor: str, reason: str = "",
+                         human_override: bool = False) -> dict[str, Any]:
+        """只发布已 approve 裁决的候选（Batch B commit 语义）；未批=no_approved_candidates。
+
+        重复 publish（批次已 published）返回 duplicate 标记与 readback。
+        """
+        with self._connect() as conn:
+            batch = conn.execute("SELECT * FROM import_batches WHERE batch_id=?", (batch_id,)).fetchone()
+            if batch is None:
+                return {"status": "not_found", "batch_id": batch_id}
+            if batch["status"] == "published":
+                return {"status": "already_published", "duplicate": True, "batch_id": batch_id}
+            rows = conn.execute(
+                "SELECT c.candidate_id, c.document_id, c.entity_type, c.candidate_json "
+                "FROM import_candidates c JOIN approval_records a "
+                "ON a.candidate_id=c.candidate_id AND a.batch_id=c.batch_id "
+                "WHERE c.batch_id=? AND a.decision='approve' AND c.status!='published'",
+                (batch_id,),
+            ).fetchall()
+            if not rows:
+                return {"status": "no_approved_candidates", "batch_id": batch_id}
+            published = 0
+            for candidate in rows:
+                data = json.loads(candidate["candidate_json"])
+                key = _canonical_key_of(data, candidate["candidate_id"])
+                entity_type = candidate["entity_type"]
+                entity = conn.execute(
+                    "SELECT * FROM canonical_entities WHERE tenant_id=? AND entity_type=? AND canonical_key=?",
+                    (batch["tenant_id"], entity_type, key),
+                ).fetchone()
+                entity_id = entity["entity_id"] if entity else uuid4().hex
+                version = int(entity["current_version"]) + 1 if entity else 1
+                checksum = hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+                if entity:
+                    conn.execute("UPDATE canonical_entities SET current_version=?, updated_at=? WHERE entity_id=?",
+                                 (version, _now(), entity_id))
+                else:
+                    conn.execute("INSERT INTO canonical_entities VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                 (entity_id, batch["tenant_id"], entity_type, key, version, "active", _now(), _now()))
+                conn.execute("INSERT INTO canonical_entity_versions VALUES (?, ?, ?, ?, ?, ?)",
+                             (entity_id, version, json.dumps(data, ensure_ascii=False), checksum, batch_id, _now()))
+                ledger_id = uuid4().hex
+                mode = "human_override" if human_override else "standard"
+                conn.execute("INSERT INTO canonical_ledger VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                             (ledger_id, batch_id, entity_id, version, "publish", actor, mode, _now()))
+                conn.execute("INSERT INTO canonical_outbox VALUES (?, ?, ?, ?, ?, ?)",
+                             (uuid4().hex, ledger_id, "canonical.entity.published",
+                              json.dumps({"entity_id": entity_id, "version": version}, ensure_ascii=False),
+                              "pending", _now()))
+                conn.execute("UPDATE import_candidates SET status='published' WHERE candidate_id=?",
+                             (candidate["candidate_id"],))
+                published += 1
+            conn.execute("UPDATE import_batches SET status='published', updated_at=? WHERE batch_id=?",
+                         (_now(), batch_id))
+        return self.readback(batch_id) | {"status": "published", "published": published}
+
 
 class PostgresM0Store:
     """PostgreSQL implementation using the same M0 table contract."""
@@ -377,6 +491,107 @@ class PostgresM0Store:
                 "entities": [{"entity_id": r[0], "entity_type": r[1], "canonical_key": r[2], "version": r[3],
                               "payload_json": r[4] if isinstance(r[4], dict) else json.loads(r[4]) if isinstance(r[4], str) else r[4],
                               "checksum": r[5]} for r in rows]}
+
+    # ── M0 分片 C1 增量补：与 M0Store 同接口（迁自 INT m0_backend.py:493-590）──
+
+    def resolve_candidate(self, batch_id: str, candidate_id: str, *, action: str,
+                          actor: str, mode: str = "standard", reason: str = "") -> dict[str, Any]:
+        """PostgreSQL 版 per-candidate 人工裁决（Batch B）。"""
+        if action not in {"approve", "reject"}:
+            raise ValueError("resolve action 必须为 approve|reject")
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET search_path TO yunpai_m0")
+                cur.execute("SELECT batch_id FROM import_batches WHERE batch_id=%s", (batch_id,))
+                if cur.fetchone() is None:
+                    raise ValueError(f"batch not found: {batch_id}")
+                cur.execute("SELECT candidate_id,status FROM import_candidates WHERE batch_id=%s AND candidate_id=%s",
+                            (batch_id, candidate_id))
+                if cur.fetchone() is None:
+                    raise ValueError(f"candidate not found: {candidate_id}")
+                cur.execute("SELECT 1 FROM approval_records WHERE batch_id=%s AND candidate_id=%s",
+                            (batch_id, candidate_id))
+                if cur.fetchone():
+                    raise ValueError(f"already decided: candidate {candidate_id} in batch {batch_id}")
+                cur.execute("INSERT INTO approval_records VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                            (uuid4().hex, batch_id, candidate_id, actor, action, mode, reason, _now()))
+                cur.execute("UPDATE import_candidates SET status=%s WHERE candidate_id=%s",
+                            (("approved" if action == "approve" else "rejected"), candidate_id))
+        return {"batch_id": batch_id, "candidate_id": candidate_id,
+                "decision": action, "actor": actor, "status": "resolved"}
+
+    def list_candidates(self, batch_id: str) -> dict[str, Any]:
+        """PostgreSQL 版候选明细（Batch B）。"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET search_path TO yunpai_m0")
+                cur.execute(
+                    "SELECT c.candidate_id, c.entity_type, c.status AS candidate_status, "
+                    "c.candidate_json, d.filename, d.sha256 "
+                    "FROM import_candidates c JOIN source_documents d ON d.document_id=c.document_id "
+                    "WHERE c.batch_id=%s ORDER BY c.candidate_id", (batch_id,))
+                rows = cur.fetchall()
+        candidates = []
+        for candidate_id, entity_type, candidate_status, raw, filename, sha256 in rows:
+            try:
+                candidate = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            except ValueError:
+                candidate = {}
+            candidates.append({"candidate_id": candidate_id, "entity_type": entity_type,
+                               "candidate_status": candidate_status, "candidate": candidate,
+                               "filename": filename, "sha256": sha256})
+        return {"batch_id": batch_id, "count": len(candidates), "candidates": candidates}
+
+    def publish_approved(self, batch_id: str, *, actor: str, reason: str = "",
+                         human_override: bool = False) -> dict[str, Any]:
+        """PostgreSQL 版：只发布已 approve 裁决的候选（Batch B commit 语义）。"""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET search_path TO yunpai_m0")
+                cur.execute("SELECT * FROM import_batches WHERE batch_id=%s", (batch_id,))
+                batch = cur.fetchone()
+                if not batch:
+                    return {"status": "not_found", "batch_id": batch_id}
+                if batch[3] == "published":
+                    return {"status": "already_published", "duplicate": True, "batch_id": batch_id}
+                cur.execute(
+                    "SELECT c.candidate_id, c.entity_type, c.candidate_json "
+                    "FROM import_candidates c JOIN approval_records a "
+                    "ON a.candidate_id=c.candidate_id AND a.batch_id=c.batch_id "
+                    "WHERE c.batch_id=%s AND a.decision='approve' AND c.status!='published'", (batch_id,))
+                candidates = cur.fetchall()
+                if not candidates:
+                    return {"status": "no_approved_candidates", "batch_id": batch_id}
+                published = 0
+                for candidate_id, entity_type, data in candidates:
+                    if isinstance(data, str):
+                        data = json.loads(data)
+                    key = _canonical_key_of(data, candidate_id)
+                    cur.execute("SELECT entity_id,current_version FROM canonical_entities WHERE tenant_id=%s AND entity_type=%s AND canonical_key=%s",
+                                (batch[1], entity_type, key))
+                    entity = cur.fetchone()
+                    entity_id, version = (entity[0], int(entity[1]) + 1) if entity else (uuid4().hex, 1)
+                    checksum = hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+                    if entity:
+                        cur.execute("UPDATE canonical_entities SET current_version=%s,updated_at=%s WHERE entity_id=%s",
+                                    (version, _now(), entity_id))
+                    else:
+                        cur.execute("INSERT INTO canonical_entities VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                                    (entity_id, batch[1], entity_type, key, version, "active", _now(), _now()))
+                    cur.execute("INSERT INTO canonical_entity_versions VALUES (%s,%s,%s::jsonb,%s,%s,%s)",
+                                (entity_id, version, json.dumps(data, ensure_ascii=False), checksum, batch_id, _now()))
+                    mode = "human_override" if human_override else "standard"
+                    ledger_id = uuid4().hex
+                    cur.execute("INSERT INTO canonical_ledger VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                                (ledger_id, batch_id, entity_id, version, "publish", actor, mode, _now()))
+                    cur.execute("INSERT INTO canonical_outbox VALUES (%s,%s,%s,%s::jsonb,%s,%s)",
+                                (uuid4().hex, ledger_id, "canonical.entity.published",
+                                 json.dumps({"entity_id": entity_id, "version": version}), "pending", _now()))
+                    cur.execute("UPDATE import_candidates SET status='published' WHERE candidate_id=%s", (candidate_id,))
+                    published += 1
+                cur.execute("UPDATE import_batches SET status='published',updated_at=%s WHERE batch_id=%s",
+                            (_now(), batch_id))
+        return self.readback(batch_id) | {"status": "published", "published": published}
 
 
 def create_app():

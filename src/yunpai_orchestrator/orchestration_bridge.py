@@ -329,16 +329,27 @@ def _read_m0_entities(state: RunState, entity_type: str) -> list[dict[str, Any]]
     equipment_master/station_master/worker_master/tooling_master/production_calendar
     落库。读不到或未审批时返回空列表，调用方失败关闭。
 
-    读口优先级：``M0_URL`` 未配置时读本地 canonical 库（``YUNPAI_M0_DB``，
-    默认 ``runtime/yunpai-m0.sqlite``；库文件不存在则返回空，不创建空库）；
-    配置了 ``M0_URL`` 时保持原 HTTP 行为。
+    读口优先级（集成口径 = M0 与 M5 并集）：显式配置 ``YUNPAI_M0_DB`` 时读该本地库
+    （进程内，不依赖 ``M0_URL``）；未配置时若 ``M0_URL`` 也未配置则读默认
+    ``runtime/yunpai-m0.sqlite``（库文件不存在返回空、不创建空库），配置了
+    ``M0_URL`` 则走 HTTP。本地分支一律经 ``_m0_local_entities``（``M0Store.list_entities``
+    + ``attributes`` 并入顶层）。
     """
     from pathlib import Path
 
     base_url = str(os.getenv("M0_URL") or "").rstrip("/")
     tenant_id = str(state.get("tenant_id") or "").strip() or "default"
-    local_db = str(os.getenv("YUNPAI_M0_DB") or "runtime/yunpai-m0.sqlite")
-    if not base_url:
+    # 本地 canonical 读口（M0 与 M5 两分片口径并集；两者都经 M0Store.list_entities —— 裁决 R1，
+    # 且在读取处把 payload.attributes 并入顶层 —— 裁决 R2）：
+    #   * M0（S1 C4）：显式配置 YUNPAI_M0_DB 时进程内读 canonical，不再依赖 M0_URL HTTP 假站位；
+    #   * M5：M0_URL 未配置时读本地库（YUNPAI_M0_DB，默认 runtime/yunpai-m0.sqlite），
+    #     库文件不存在则返回空、**不创建空库**。
+    # 集成口径：显式 YUNPAI_M0_DB 优先（比隐式 HTTP 更确定）；本地分支统一走
+    # `_m0_local_entities`（M5 版：attributes 归一化 + M0Store 读口），因此 M0 的
+    # `m0_facts.list_entities` 调用点被其覆盖（语义等价且多一层 R2 归一化）。
+    local_db = str(os.getenv("YUNPAI_M0_DB") or "")
+    if local_db or not base_url:
+        local_db = local_db or "runtime/yunpai-m0.sqlite"
         if not Path(local_db).exists():
             return []
         try:
@@ -1006,6 +1017,34 @@ def bridge_payload(state: RunState, tool: str) -> dict[str, Any]:
                            missing_fields=["ingest_document 输出或原始附件"],
                            required_tool="ingest_document")
         payload: dict[str, Any] = {"files": [file_value]}
+        return payload
+    if tool == "data_import_preview":
+        # S1 C3：预览需要批次号；从上游 data_import_run 产出回填（我方 graph.py:852-854 同口径）。
+        imported = output_data(state, "data_import_run")
+        batch_id = str(request.get("batch_id") or imported.get("batch_id") or imported.get("id") or "")
+        if not batch_id:
+            return blocked(state, source_module="m0", tool=tool,
+                           missing_fields=["data_import_run.batch_id"],
+                           required_tool="data_import_run")
+        return {"batch_id": batch_id}
+    if tool == "data_import_resolve":
+        # S1 C3：裁决必须显式给 kind/action（禁止伪造裁决），批次号从上游回填。
+        imported = output_data(state, "data_import_run")
+        batch_id = str(request.get("batch_id") or imported.get("batch_id") or imported.get("id") or "")
+        if not batch_id:
+            return blocked(state, source_module="m0", tool=tool,
+                           missing_fields=["data_import_run.batch_id"],
+                           required_tool="data_import_run")
+        kind = str(request.get("kind") or "")
+        action = str(request.get("action") or "")
+        if kind not in {"entity", "mapping"}:
+            raise ValueError("data_import_resolve 需要显式 kind(entity|mapping)，禁止伪造裁决")
+        if action not in {"approve", "reject"}:
+            raise ValueError("data_import_resolve 需要显式 action(approve|reject)，禁止伪造裁决")
+        payload: dict[str, Any] = {"batch_id": batch_id, "kind": kind, "action": action}
+        for key in ("id", "candidate_id", "note"):
+            if request.get(key) not in (None, ""):
+                payload[key] = request[key]
         return payload
     if tool == "data_import_commit":
         imported = output_data(state, "data_import_run")
