@@ -10,19 +10,21 @@
 | P-002 | V2-M1/M2：骨架 + 资产迁移 + 测试跑绿 | 已完成 | Agent | pytest 376 passed/4 skipped + API 冒烟全通 | E-002 | 2026-09-09 |
 | P-003 | V2-M3：119 工具+8 技能逐个审查注册（R1-R7，七批制 D-004） | 已完成 | Agent | 台账 100% 登记，五项 checklist 全过 | E-004 | 2026-09-09 |
 | P-010 | V2 工具迁移集成收口（6 分片合并 + fact_gateway + W913 双路径 + 账本） | 已完成 | Agent | 全量 pytest 642 passed/4 skipped + check_contracts exit 0 + 账本收口 | E-004 | 2026-09-09 |
+| P-011 | Gate 覆盖缺口微收口（R21：`data_import_commit` 声明对齐 + 断言） | 已完成 | Agent | 全量 pytest 643 passed/4 skipped + check_contracts exit 0 + 缺口 0 | E-005 | 2026-09-09 |
 
 ## 阻塞项
 
 | 阻塞 ID | 阻塞 | 影响 | 解除条件 | 状态 |
 |---|---|---|---|---|
 | B-001 | **R8 已知缺口（P0）：`local_write`/`external_write` 工具的写在人工批准之前已发生**（M0 6 类、M1 4 件、M3 4 件远端审批、M4 10 件、M5 5 件，逐条见各分片报告「已知缺口」表）。V2 门模型只有执行后审查（`graph.py` 唯一开门点），无执行前 authorization 等价物 | 授权门语义与书二 §6.2「先授权后执行」不一致；写已落库才开门 | **先改书再改码**：书二 §6.2 明确 propose→approve→commit 三段式（草稿/候选先落，批准后提交），再按书改码 | 待裁决 |
-| B-002 | Gate 覆盖核对缺口 1：`data_import_commit` RULES 仅 `fail`、无 `gate:` 动作，manifest 声明 `review_gate=candidate`（`m0.json:149-150`）但图内零消费（`default_gate_for_authorized` 死代码），且无 candidate 断言 | 合同门型与生效门型漂移，后续重构易误删兜底 | 二选一：① `m0.json` 改声明为 `blocked_input`/`data` 并补断言；② 补显式断言锁 `candidate` 声明。同样先改书（门语义）再改码 | 待裁决 |
+| B-002 | Gate 覆盖核对缺口 1（**已修复**）：`data_import_commit` RULES 仅 `fail`、无 `gate:` 动作，manifest 曾声明 `review_gate=candidate`（`m0.json:149-150`）但图内零消费（`default_gate_for_authorized` 死代码），且无 candidate 断言 | 已消除：声明与生效门型一致（`review_gate=data` → `gate_type_for` = `blocked_input`，与 `evaluate()` 实际路径对齐） | **已修复（R21，2026-09-09）**：`m0.json:150` 改 `review_gate=data`（保留 `side_effect=external_write`）+ 断言 `tests/test_migration_m0.py:466-507`；RULES **有意不加** `gate:` 动作（发布人工门在 `data_import_run`，不重复开门） | 已修复 |
 | - | 无 | - | - | - |
 
 ## 下一步
 
 1. feat/orchestrator-skeleton-20260909 收口合 main → 拉 feat/orchestrator-register-<开工日>。
 2. 按 docs/07 §4 工作卡开工 R1（识别 4+M0 沙箱 5；建 test_ledger_consistency + test_bridge_rules_coverage；**E-003 四项发现随 R1 修补**：/tools 暴露与绑定表矛盾、非法参数 500、LLM workflow 提案闭环缺失、Qwen 超时/占位 key 配置）。
+3. 集成分支 `feat/migration-integration-20260909` 推送即更新 **PR #2**（不另开）；B-001（批准前已写，P0）按「先改书再改码」立项。
 
 ## 进度历史
 
@@ -44,3 +46,4 @@
 | 2026-09-09 | P-008 | M4 分片迁移施工（worktree `_v2work/M4`，分支 `feat/migration-m4-20260909`）：26 工具 = 已迁 24（直接搬 23 + 改造后搬 1 `import_m4_purchase_suggestions_json` 真实实现）/ 废弃 1 / 不搬 1；16 条 RULES + manifest `side_effect`/`review_gate` 双写；P0 三项修复（假实现替换、`send_m4_purchase_order` 远程禁令升级为 registry 强制、`query_m4_material_supply_snapshot` 惰性写挂门） | 证据：`_migration/REPORT-MIG-M4.md`、`tests/test_m4_review_gates.py`（47 例） | 遗留：M4 文档漂移（skills/m4/references/tools.md，R11 本轮不动）；供应商权威源双写风险（R13 待裁决）；写工具批准前已写 | 确认来源：父会话 R11/R12/R13/R17 裁定 |
 | 2026-09-09 | P-009 | M5 分片迁移施工（worktree `_v2work/M5`，分支 `feat/migration-m5-20260909`，5 个提交）：20 工具（直接搬 5 / 改造后搬 13 / 不搬 2）；m5_tools 迁入 R6 8 处语义 + 阻塞信封统一顶层 `code`（2 处合同强制例外保留异常）；rules 新增 4 条写工具门（replan→apply、dispatch/prepare/record→authorization）；m5.json 6 写工具双写 + 10 处描述/schema 同步；graph 新增 `_apply_m5_release`（apply 门 head CAS 真实发布 + 冲突重开门）；+21 用例 | 证据：`_migration/REPORT-MIG-M5.md`；pytest 417 passed/4 skipped（exit 0）；check_contracts exit 0 | 遗留：②例外 2 条需契约裁定（REQUESTS-M5 #1）；写工具批准前已写；`ingest_m5_planning_snapshot` 按合同 `review_gate=data` 兜底不加后置门 | 确认来源：父会话 R8/R9/R20 裁定 |
 | 2026-09-09 | P-010 | **集成收口（INT2）**：6 分片全合入 `feat/migration-integration-20260909`（M2 e94984d → M3 4f01478 → M4 aeb0254 → M5 fbffd9b → M0 9e5440f → M1 394e9d5）+ R16 跨切面修复 8759a0d + 共享断言收口 c1cc540 + `fact_gateway.py` 抽取（R2 单点化，替换 5 处局部归一）；W913 双路径实跑（free 路径 `ingest_m5_planning_snapshot` completed/`snapshots_stored`，workflow 路径实测至 M5 solve）；Gate 覆盖系统性核对 44 需补 → 42 已覆盖 / 1 缺口；账本收口（F-004/F-006/P-004..P-010/E-004 + B-001/B-002） | 证据：`_migration/REPORT-MIG-INTEGRATION.md`、`_migration/exec/GATE-COVERAGE-INT2.md`；全量 pytest **642 passed/4 skipped**（exit 0）；check_contracts exit 0；面指标 handlers 114/bound_local 100/unbound 6/visible 109/rules 51 | 遗留：workflow 路径未达 `m5.released`（4 类卡点见报告 §4）；R8 批准前已写（B-001）；`data_import_commit` 门漂移（B-002）；M4 文档漂移（R11） | 下一步：父会话 push/PR + 按 B-001/B-002「先改书再改码」立项 |
+| 2026-09-09 | P-011 | **Gate 缺口微收口（INT2 第三轮 · R21）**：`data_import_commit` 声明漂移收口——`registry-manifests/m0.json:150` `review_gate: candidate → data`（`gate_type_for` 实测 → `blocked_input`，R20），`side_effect=external_write` 保留；RULES `rules.py:83-85` **有意不加** `gate:` 动作（发布人工门已在上游 `data_import_run`，不重复开门）；补断言 `tests/test_migration_m0.py:466-507`（成功不开门 / `BLOCKED_INPUT`→`blocked_input` 且带 `message`+`missing_fields` / `gate_type_for("data_import_run")=="candidate"` 且 commit ≠ `candidate`）；未改 `gate_type_for`/`default_gate_for_authorized`、未动 K1–K5、未开新 PR | 口径偏离获批（父会话裁定）：不写 `review_gate=none`（会新增 W2 噪音：写工具无门）、不删字段（`registry._contract_defaults` 回退 `gate_by_module["m0"]="candidate"` → 漂移静默复原）、选 `data`（与 M5 `ingest_m5_planning_snapshot` 先例对称） | 证据：`_migration/REPORT-MIG-INTEGRATION.md` §5/§9/§10、`_migration/exec/GATE-COVERAGE-INT2.md` §3.3「收口记录」；全量 pytest **643 passed/4 skipped**（exit 0）；`check_contracts.py` exit 0（`--strict` 仍只余存量 W2 `ingest_recognized` 1 条） | 遗留：workflow 路径未达 `m5.released`（K1–K5）；B-001 批准前已写 | 下一步：推送更新 PR #2 + 按 B-001 立项 |
