@@ -8,10 +8,33 @@ import pytest
 from yunpai_orchestrator.orchestrator.router import SKILL_USAGE_ORDER
 from yunpai_orchestrator.llm import QwenConfig, QwenRouter
 from yunpai_orchestrator.registry import build_default_registry
-from yunpai_orchestrator.skills import SkillRegistry, build_default_skill_registry
+from yunpai_orchestrator.skills import (
+    M1_SKILL_OPERATION_MAP,
+    M2_SKILL_OPERATION_MAP,
+    M3_SKILL_OPERATION_MAP,
+    M4_SKILL_OPERATION_MAP,
+    SkillRegistry,
+    build_default_skill_registry,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILLS_DIR = REPO_ROOT / "skills"
+
+#: 真源 operation map（直接 import 常量，消除双份白名单；PROMPT-INT2 §四）。
+_REAL_OP_MAPS: dict[str, dict[str, str]] = {
+    "yunpai-m1-document-parser": M1_SKILL_OPERATION_MAP,
+    "yunpai-m2-bom-sop": M2_SKILL_OPERATION_MAP,
+    "yunpai-m3-material-planning": M3_SKILL_OPERATION_MAP,
+    "yunpai-m4-procurement": M4_SKILL_OPERATION_MAP,
+}
+
+#: M0/M5 的 operation map 目前仍内联在 handler 里（无导出常量），只能保留镜像；
+#: 后续若抽成常量，应一并迁到 ``_REAL_OP_MAPS``。
+_INLINE_OP_MAPS: dict[str, dict[str, str]] = {
+    "yunpai-m0-data-foundation": {"default": "data_import_run", "ingest": "data_import_run", "preview": "data_import_preview", "resolve": "data_import_resolve", "commit": "data_import_commit"},
+    "yunpai-m5-pmc": {"default": "solve_scheduling", "solve": "solve_scheduling", "schedule": "get_m5_schedule", "progress": "get_m5_pmc_progress", "contracts": "get_m5_integration_contracts", "readiness": "get_m5_material_readiness", "knowledge_search": "search_m5_knowledge", "knowledge_record": "record_m5_knowledge", "message_prepare": "prepare_m5_department_message", "message_get": "get_m5_department_message", "message_delivery": "get_m5_department_message_delivery", "advise": "advise_m5_schedule", "intelligent": "run_m5_intelligent_schedule", "procurement": "generate_m5_material_procurement_plan"},
+    "yunpai-m5-pmc-lifecycle": {"default": "get_m5_schedule", "snapshot": "ingest_m5_planning_snapshot", "ingest": "ingest_m5_planning_snapshot", "schedule": "get_m5_schedule", "versions": "list_m5_schedules", "progress": "get_m5_pmc_progress", "replan": "replan_m5_schedule", "dispatch": "dispatch_m5_schedule", "execution": "get_m5_execution_summary"},
+}
 
 
 def _frontmatter_name(path: Path) -> str:
@@ -25,17 +48,12 @@ def _frontmatter_name(path: Path) -> str:
 
 def _op_map_tools(skill_name: str, skills: SkillRegistry) -> set[str]:
     """M5-style skills dispatch through operation_map; every mapped tool must
-    be visible to validate_tools/catalog so there is no silent whitelist."""
-    module_skill_ops = {
-        "yunpai-m0-data-foundation": {"default": "data_import_run", "ingest": "data_import_run", "preview": "data_import_preview", "resolve": "data_import_resolve", "commit": "data_import_commit"},
-        "yunpai-m1-document-parser": {"default": "ingest_document", "parse": "ingest_document", "review": "submit_m1_review", "report": "generate_m1_report"},
-        "yunpai-m2-bom-sop": {"default": "run_bom_sop_workflow", "generate": "run_bom_sop_workflow", "history": "search_m2_bom_history", "bom": "generate_m2_bom_controlled", "sop": "generate_m2_sop", "run": "get_m2_run"},
-        "yunpai-m3-material-planning": {"default": "run_m3_procurement_requirements", "mrp": "run_m3_procurement_requirements", "readiness": "get_material_readiness_snapshot", "readiness_summary": "get_material_readiness", "plan": "get_m3_procurement_plan", "handoff": "export_m3_procurement_suggestions"},
-        "yunpai-m4-procurement": {"default": "import_m4_purchase_suggestions_json", "import": "import_m4_purchase_suggestions_json", "orders": "list_m4_purchase_orders", "tracking": "list_m4_tracking", "alerts": "list_m4_purchase_alerts", "supply": "query_m4_material_supply_snapshot", "supplier_reply": "parse_m4_supplier_reply"},
-        "yunpai-m5-pmc": {"default": "solve_scheduling", "solve": "solve_scheduling", "schedule": "get_m5_schedule", "progress": "get_m5_pmc_progress", "contracts": "get_m5_integration_contracts", "readiness": "get_m5_material_readiness", "knowledge_search": "search_m5_knowledge", "knowledge_record": "record_m5_knowledge", "message_prepare": "prepare_m5_department_message", "message_get": "get_m5_department_message", "message_delivery": "get_m5_department_message_delivery", "advise": "advise_m5_schedule", "intelligent": "run_m5_intelligent_schedule", "procurement": "generate_m5_material_procurement_plan"},
-        "yunpai-m5-pmc-lifecycle": {"default": "get_m5_schedule", "snapshot": "ingest_m5_planning_snapshot", "ingest": "ingest_m5_planning_snapshot", "schedule": "get_m5_schedule", "versions": "list_m5_schedules", "progress": "get_m5_pmc_progress", "replan": "replan_m5_schedule", "dispatch": "dispatch_m5_schedule", "execution": "get_m5_execution_summary"},
-    }
-    return set(module_skill_ops.get(skill_name, {}).values())
+    be visible to validate_tools/catalog so there is no silent whitelist.
+
+    M1–M4 用真源常量（import），M0/M5 仍内联（handler 内无导出常量）。
+    """
+    op_map = _REAL_OP_MAPS.get(skill_name) or _INLINE_OP_MAPS.get(skill_name) or {}
+    return set(op_map.values())
 
 
 def test_skill_docs_frontmatter_matches_registry_names():

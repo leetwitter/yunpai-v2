@@ -49,7 +49,8 @@ def test_sandbox_marked_and_counted(registry):
     assert bindings["import_m4_purchase_suggestions_json"] == BindingStatus.BOUND_LOCAL
     summary = {k: len(v) for k, v in describe(registry).items()}
     assert summary["sandbox"] == 0  # 无本地假实现残留
-    assert summary["bound_local"] >= 30  # 31 本地 fixture + M4 24 个本地实现
+    assert summary["bound_local"] >= 100  # 集成终值 100（M0–M5 全部分片落地，见 REPORT-MIG-INTEGRATION.md）
+    assert summary["unbound"] == 6        # 终值 6（DEPRECATED 1 + INTENTIONALLY_UNBOUND 3 + ORCHESTRATION_INTERNAL 2）
 
 
 def test_catalog_view_only_exposes_visible(registry):
