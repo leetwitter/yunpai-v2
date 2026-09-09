@@ -5,9 +5,14 @@ from __future__ import annotations
 The M1 module follows the same pattern as ``m3_m4_tooling``: a dedicated HTTP
 adapter implements the transport semantics of the standalone M1 service (T8
 history) on top of the current Tool contract, and the Skill operation map is the
-single source of truth for ``yunpai-m1-document-parser`` dispatch.  No full M1
-domain service is embedded into the orchestrator workers; production parsing
-always happens on the independent M1 service reached over HTTP.
+single source of truth for ``yunpai-m1-document-parser`` dispatch.
+
+Since S2 (M1-1..M1-3) the module also owns an in-process local implementation
+(``m1_domain`` tasks/documents + ``m1_knowledge`` canonical reads) used by the
+default/local registry, so local runs no longer depend on the M1 service.  The
+two transports are independent: *which* transport is used is decided by
+``YUNPAI_TOOL_TRANSPORT`` (``registry.build_runtime_registry``), not by whether a
+local implementation exists.
 """
 
 M1_TOOL_NAMES = (
@@ -30,9 +35,11 @@ M1_TOOL_NAMES = (
     "get_m1_knowledge_stats",
 )
 
-#: Tools that only stage/parse a candidate locally and never pretend to be a
-#: full production M1 parse.  In local transport these stay bound to fixture
-#: handlers; in HTTP transport they are replaced by the real M1 adapter.
+#: Legacy marker kept for traceability: ``ingest_document`` used to be the only
+#: M1 tool with a *fixture* handler.  Since M1-1 it is a real deterministic local
+#: parser (``m1_domain.process_upload_file``), so this set is no longer consulted
+#: by the registry; do not use it to decide HTTP binding (see
+#: ``M1_HTTP_ADAPTER_TOOL_NAMES``).
 LOCAL_M1_FIXTURE_TOOLS = frozenset({"ingest_document"})
 
 #: Every M1 tool in production HTTP transport must go through the dedicated M1
@@ -41,8 +48,12 @@ LOCAL_M1_FIXTURE_TOOLS = frozenset({"ingest_document"})
 #: generic adapter from silently binding M1 tools with wrong semantics.
 M1_HTTP_ADAPTER_TOOL_NAMES = frozenset(M1_TOOL_NAMES)
 
-#: M1 tools bound to the dedicated HTTP adapter in the default/local registry
-#: (all M1 tools except the local fixture handler for ingest_document).
+#: 兼容别名：本地化前「默认 registry 里由专用 HTTP 适配器负责的 M1 工具」集合
+#: （当时 = 除 ingest_document fixture 外的 16 个）。S2 收口后 17 个 M1 工具全部
+#: 有本地 handler，default/local registry 对全部 17 个都用
+#: ``bind_m1_http(..., overwrite=False)``（已绑定的本地 handler 不被覆盖），HTTP
+#: 运行时用 ``overwrite=True`` 整体换绑。常量值保留 16 以不动既有断言；
+#: INT 的 ``LOCAL_M1_TOOLS`` 按 rows-S2 §系统性发现 3 要求**不随迁**。
 M1_ADAPTER_TOOL_NAMES = frozenset(
     name for name in M1_TOOL_NAMES if name not in LOCAL_M1_FIXTURE_TOOLS
 )
