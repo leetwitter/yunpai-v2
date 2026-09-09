@@ -4,10 +4,10 @@
 
 ## 当前验收结论
 
-- 结论：V2 工具迁移 6 分片（M0–M5）已全合入集成分支并全绿（E-004）；F-004 完成、F-006 部分完成；Gate 覆盖缺口 0（E-005，R21 收口）
-- 验收范围：V2-M3 注册批次（119 工具）+ 集成收口
+- 结论：V2 工具迁移 6 分片（M0–M5）已全合入集成分支并全绿（E-004）；F-004 完成、F-006 完成（E-006）；Gate 覆盖缺口 0（E-005，R21 收口）
+- 验收范围：V2-M3 注册批次（119 工具）+ 集成收口 + W913 双路径联调
 - 最后检查：2026-09-09
-- 遗留问题：workflow 路径未达 m5.released（报告 §4）；B-001 批准前已写
+- 遗留问题：B-001 批准前已写（「先改书再改码」）；B-003..B-007 已修复（第四轮 K1–K6）
 
 ## 验收标准
 
@@ -16,7 +16,7 @@
 | A-001 | 方案书阶段：书一/书二/书三经用户逐卡/逐章审核通过并 commit 入库 | 通过 | 用户会话确认 + git 提交记录 | E-001 |
 | A-002 | 骨架阶段：LangGraph 唯一执行路径可用，API 契约兼容冒烟通过 | 基本通过 | pytest 全绿+API 冒烟（E-002）；逐字段流式契约快照留 M5 录制比对 | E-002 |
 | A-003 | 注册阶段：119 工具+8 技能台账登记完整，五项 checklist 全过 | 通过 | 全量 pytest 643 passed/4 skipped + check_contracts exit 0 + Gate 覆盖核对（44 需补→43 覆盖/0 缺口/1 有意不加） | E-004/E-005 |
-| A-004 | 联调阶段：W913 workflow 路径 m5.released 且 free 路径全链跑通 | 部分通过 | free 路径已通（`ingest_m5_planning_snapshot` completed）；workflow 路径实测至 M5 solve，未达 released，卡点留证 | E-004 |
+| A-004 | 联调阶段：W913 workflow 路径 m5.released 且 free 路径全链跑通 | 通过 | workflow `run-b84071dc…`（route.source=explicit）与 free `run-3f6b9383…`（route.source=llm）均 completed + `released` + `is_current_head=true`（判定器 PASS 5/5）；free 旧死点 `ingest_m5_planning_snapshot` completed | E-006 |
 | A-005 | 自进化阶段：四接缝（观察/注入消费/使用反馈/红线周期）测试全绿 | 待检查 | pytest 分项 + 演示证据 | 无 |
 
 ## 证据索引
@@ -28,6 +28,7 @@
 | E-003 | 2026-09-09 | V2-M3 开工门基线复验：.venv(Py3.12.10) pytest -q → 376 passed/4 skipped(120.7s) 对齐 E-002；注册目录对账 119 specs=115 manifest+4 local、四态 30/53/1/35、CatalogView=84 无 UNBOUND/DEPRECATED 泄漏、production 降级 OK、8 技能一致；路由专项单测 18/18；活体冒烟 9 用例×2 配置（确定性回退 + DeepSeek 真实 LLM 注入 QwenRouter 同码路径，8027 临时实例）8/9：chat/free/显式一票否决/确定性回退 1-2/Gate 挂起/NDJSON 流全通，LLM 提案层经真实模型走通（DeepSeek 1-3s、本地 Qwen qwen3.8-27b 49-76s），_validate 护栏对不可见工具/未知技能有效 | 通过（开工门开启；4 项发现转 R1 处理清单） | 分支 feat/orchestrator-skeleton-20260909（账本行未提交，随 R1 首 PR 入库） | 发现：① /tools 端点暴露全量 119 含 5 个红线名且 run_mrp_procurement_plan 标 bound=true 与绑定表 UNBOUND 矛盾；② 显式非法参数（未知 workflow/不可见工具）返回 HTTP 500 而非 4xx 结构化错误；③ LLM workflow 提案闭环缺失——system prompt 未注入 KNOWN_WORKFLOWS/未要求 workflow_id，_validate 对 route=workflow 必拒，实际仅靠附件确定性规则兜底；④ 本地 Qwen 实测延迟 49-76s 超默认 QWEN_TIMEOUT_S=45s，且 classify 空 key 即 not_configured（本地模型需占位 key，guide_chat 有占位而 classify 无）。另：默认 python=3.10 与 .venv 并存，误用致 6 failed（缺 pypdf+langgraph 版本差异），基线解释器=.venv | 会话记录+本表（临时脚本在 %TEMP%\yunpai-verify） | 至 R1 收口 |
 | E-004 | 2026-09-09 | pytest 642 passed/4 skipped(exit0)；check_contracts exit0；handlers114/bound_local100/unbound6/visible109/rules51；Gate 44→42/缺口1；W913 free 通过、workflow 未达 released | 通过（F-004 完成/F-006 部分） | @a75fab3 | REPORT-MIG-INTEGRATION.md | 长期 |
 | E-005 | 2026-09-09 | R21 收口 Gate 缺口：m0.json:150 review_gate candidate→data（gate_type_for→blocked_input）+ 断言 tests/test_migration_m0.py:466-507；pytest 643 passed/4 skipped(exit0)；check_contracts exit0（--strict 无新增 W） | 通过（44 需补→43 覆盖/0 缺口/1 有意不加） | @f44fbf7 | GATE-COVERAGE-INT2.md §3.3 | 长期 |
+| E-006 | 2026-09-09 | W913 双路径实跑（v2_w913.py）：workflow run-b84071dc…/free run-3f6b9383…（source=llm）均 completed+released+is_current_head true；pytest 659 passed/4 skipped(exit0)；check_contracts exit0 | 通过（F-006 完成） | @1175bfe | REPORT-MIG-INTEGRATION.md §11 | 长期 |
 
 ## Gate 记录
 
@@ -40,3 +41,4 @@
 |---|---|---|---|---|---|
 | 2026-09-09 | V2 工具迁移集成收口（6 分片 + fact_gateway + W913 双路径 + Gate 覆盖 + 账本） | E-004 | 通过（642 passed/4 skipped；check_contracts exit 0） | workflow 路径未达 m5.released（报告 §4）；B-001/B-002 待「先改书再改码」 | F-004 完成、F-006 部分完成 |
 | 2026-09-09 | Gate 覆盖缺口微收口（INT2 第三轮 · R21：`data_import_commit` 声明对齐 + 断言） | E-005 | 通过（643 passed/4 skipped；check_contracts exit 0；--strict 无新增 W） | workflow 路径未达 m5.released（K1–K5）；B-001 批准前已写 | Gate 缺口 0（43 覆盖 + 1 有意不加 = 44）；B-002 已修复 |
+| 2026-09-09 | W913 workflow 路径打通（INT2 第四轮 · K1–K6：M0 前向装配 / 门补数可见 / 工序形状 / 降级日历 / 降级资源） | E-006 | 通过（659 passed/4 skipped；check_contracts exit 0；双路径 completed+released，判定器 PASS 5/5） | B-001 批准前已写（先改书再改码）；K6 实跑路径工位来自 supplement，由严格校验单测锁定 | F-006 完成；B-003..B-007 已修复 |
