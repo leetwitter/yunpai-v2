@@ -287,6 +287,22 @@ async def _dispatch_registered_tool(
     return output
 
 
+#: M2 Skill operation → tool 映射（单一来源：handler 与 SkillSpec.tools 同源，
+#: 修 REQUESTS-R3 §2.2「白名单与 operation map 脱钩」）。
+#: ``onboard``/``runs`` 两个 operation 原先缺失 → ``onboard_m2_bom_template`` /
+#: ``list_m2_runs`` 经 Skill 不可达（rows-S3.md 备注）。
+M2_SKILL_OPERATION_MAP: dict[str, str] = {
+    "default": "run_bom_sop_workflow",
+    "generate": "run_bom_sop_workflow",
+    "history": "search_m2_bom_history",
+    "bom": "generate_m2_bom_controlled",
+    "sop": "generate_m2_sop",
+    "run": "get_m2_run",
+    "onboard": "onboard_m2_bom_template",
+    "runs": "list_m2_runs",
+}
+
+
 async def m0_governance(payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     return await _dispatch_registered_tool(
         "yunpai-m0-data-foundation", payload, context,
@@ -304,7 +320,7 @@ async def m1_document_intelligence(payload: dict[str, Any], context: dict[str, A
 async def m2_engineering_control(payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     return await _dispatch_registered_tool(
         "yunpai-m2-bom-sop", payload, context,
-        {"default": "run_bom_sop_workflow", "generate": "run_bom_sop_workflow", "history": "search_m2_bom_history", "bom": "generate_m2_bom_controlled", "sop": "generate_m2_sop", "run": "get_m2_run"},
+        M2_SKILL_OPERATION_MAP,
     )
 
 
@@ -393,7 +409,7 @@ def build_default_skill_registry(tool_registry: Any | None = None) -> SkillRegis
         description="生成和审查版本化 BOM/SOP 草稿，连接历史检索、工程审核和工艺制品查询。",
         handler=m2_engineering_control,
         tags=("m2", "bom", "sop", "engineering"),
-        tools=("run_bom_sop_workflow", "search_m2_bom_history", "generate_m2_bom_controlled", "generate_m2_sop", "get_m2_run"),
+        tools=unique_tools(M2_SKILL_OPERATION_MAP),
     ))
     registry.register(SkillSpec(
         name="yunpai-m3-material-planning",
