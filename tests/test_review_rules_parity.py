@@ -79,6 +79,22 @@ def test_m3_approval_gate_declared_in_contract(registry):
         assert spec.review_gate == "authorization", name
 
 
+def test_m3_approval_success_opens_post_hoc_authorization_gate(registry):
+    """R8：写/审批类用**后置等价门**——执行成功后开 authorization 门（写已发生，人工授权后继续）。"""
+    for name in M3_APPROVAL_TOOLS:
+        findings = rules.evaluate(name, {"success": True, "data": {"status": "approved"}},
+                                  registry.specs[name])
+        assert [f["gate"] for f in findings] == ["authorization"], name
+        assert "authorization" in findings[0]["reason"], name
+
+
+def test_m3_approval_failure_does_not_open_gate(registry):
+    """旧审批族失败（TASK_NOT_FOUND 等）不写任何东西 → 不开门，如实上报。"""
+    for name in M3_APPROVAL_TOOLS:
+        assert rules.evaluate(name, {"success": False, "code": "TASK_NOT_FOUND",
+                                     "data": {}}, registry.specs[name]) == [], name
+
+
 def test_m3_authorization_gate_role_and_decision_matrix():
     gate = make_gate("authorization", "approve_m3_task", "写动作需人工授权")
     assert set(gate["allowed_roles"]) == set(GATE_ALLOWED_ROLES["authorization"])

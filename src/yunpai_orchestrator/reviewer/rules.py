@@ -6,6 +6,7 @@
 - data_import_commit: success==False → fail
 - run_bom_sop_workflow: 产出工程草稿 → gate engineering（禁当 retry 用）
 - ingest_canonical: 候选落库 → gate candidate
+- M3 旧审批四件: 执行成功 → gate authorization（R8 后置等价门；合同 review_gate 同步声明）
 - BLOCKED_INPUT 结果 → gate blocked_input（data 补数门）
 默认规则：manifest spec.review_gate ∈ {candidate,review,engineering,procurement,schedule}
 且未授权时 → 对应 Gate（schedule 归一化为 apply）。
@@ -26,6 +27,17 @@ class Check:
     value: Any = None
     action: str = "pass"          # pass | fail | gate:<type>
     reason: str = ""
+
+
+def _authorization_gate(reason: str) -> list[Check]:
+    """R8 口径：**后置等价门**——写已发生，人工 authorization 授权后流程才继续。
+
+    V2 的门模型是 reviewer 后置驱动（``graph.py:205-209`` 唯一开门点），本轮迁移
+    **不恢复执行前门**（需改 planner/executor/checkpointer，属 V2 核心重构）；
+    因此写/审批类工具用「执行后 authorization 门 + 合同 ``review_gate`` 声明」双写，
+    语义差异登记在 ``_migration/REPORT-MIG-<分片>.md`` 的「已知缺口」一节。
+    """
+    return [Check("success", "eq", True, action="gate:authorization", reason=reason)]
 
 
 #: 显式规则表（旧 reviewer 行为全集主干；R2-R5 注册批次逐工具对照补全）。
@@ -51,6 +63,15 @@ RULES: dict[str, list[Check]] = {
         Check("success", "eq", True, action="gate:candidate",
               reason="canonical 候选落库须 M0 candidate Gate 审批后发布"),
     ],
+    # ── M3 旧审批族（R6/R8）：外部写入 → 后置 authorization 门（合同 review_gate 同步声明）──
+    "approve_m3_task": _authorization_gate(
+        "旧 M3 审批（approve）为外部写入：执行后置 authorization 门，写发生在授权之前（见报告「已知缺口」）"),
+    "reject_m3_task": _authorization_gate(
+        "旧 M3 审批（reject）为外部写入：执行后置 authorization 门，写发生在授权之前（见报告「已知缺口」）"),
+    "request_change_m3_task": _authorization_gate(
+        "旧 M3 审批（request_change）为外部写入：执行后置 authorization 门，写发生在授权之前（见报告「已知缺口」）"),
+    "approve_to_send_m3_task": _authorization_gate(
+        "旧 M3 审批（approve_to_send）为外部写入：执行后置 authorization 门，写发生在授权之前（见报告「已知缺口」）"),
 }
 
 #: manifest review_gate 值 → Gate 类型归一化（registry._contract_defaults 产生）。
