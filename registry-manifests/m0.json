@@ -36,11 +36,13 @@
           "status": { "type": "string", "description": "ready | awaiting_review | failed" }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "candidate"
     },
     {
       "name": "data_import_status",
-      "description": "查询导入批次状态与文档级结果（格式×内容类型×置信度×隔离）。",
+      "description": "查询导入批次状态与候选裁决计数。文档级明细（逐候选记录）见 data_import_preview。",
       "http": {
         "method": "GET",
         "path": "/api/m0/import/batch/{batch_id}",
@@ -56,16 +58,19 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "batch": { "type": "object" },
-          "documents": { "type": "array" },
-          "stats": { "type": "object" }
+          "batch_id": { "type": "string" },
+          "status": { "type": "string" },
+          "task_id": { "type": "string" },
+          "candidates": { "type": "object", "description": "按候选状态聚合的计数。" },
+          "canonical": { "type": "boolean", "description": "是否读写 canonical 库（YUNPAI_M0_DB）；false=本地沙箱。" },
+          "environment": { "type": "string" }
         }
       },
       "execution": "sync"
     },
     {
       "name": "data_import_preview",
-      "description": "入库前预览：数据行、实体冲突、匹配候选、隔离区、台账。",
+      "description": "入库前预览候选文档明细（candidate_id/文件名/sha256/文档类型/置信度/审核状态/候选记录）。隔离区见 data_import_quarantine。",
       "http": {
         "method": "GET",
         "path": "/api/m0/import/batch/{batch_id}/preview",
@@ -81,11 +86,10 @@
       "output_schema": {
         "type": "object",
         "properties": {
+          "batch_id": { "type": "string" },
           "documents": { "type": "array" },
-          "rows": { "type": "array" },
-          "entities": { "type": "array" },
-          "mappings": { "type": "array" },
-          "quarantine": { "type": "array" }
+          "canonical": { "type": "boolean" },
+          "environment": { "type": "string" }
         }
       },
       "execution": "sync"
@@ -115,7 +119,9 @@
           "status": { "type": "string" }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "candidate"
     },
     {
       "name": "data_import_commit",
@@ -139,7 +145,9 @@
           "master_counts": { "type": "object" }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "candidate"
     },
     {
       "name": "data_import_rollback",
@@ -159,11 +167,18 @@
       "output_schema": {
         "type": "object",
         "properties": {
+          "batch_id": { "type": "string" },
           "status": { "type": "string" },
-          "rolled_back": { "type": "integer" }
+          "actor": { "type": "string" },
+          "rolled_back": { "type": "integer", "description": "回滚的实体版本数。" },
+          "rolled_back_entities": { "type": "integer", "description": "deprecated：同 rolled_back，保留历史键兼容。" },
+          "canonical": { "type": "boolean" },
+          "environment": { "type": "string" }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "candidate"
     },
     {
       "name": "data_import_history",
@@ -189,7 +204,7 @@
     },
     {
       "name": "data_import_quarantine",
-      "description": "隔离区文件列表（坏文件/伪扩展名/未分类）。",
+      "description": "隔离区文件列表（坏文件/伪扩展名/未分类），按租户返回。",
       "http": {
         "method": "GET",
         "path": "/api/m0/import/quarantine",
@@ -198,13 +213,17 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "batch_id": { "type": "string" }
+          "limit": { "type": "integer", "default": 100 }
         }
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "items": { "type": "array" }
+          "items": { "type": "array" },
+          "quarantined": { "type": "array", "description": "deprecated：同 items，保留历史实现键兼容。" },
+          "count": { "type": "integer" },
+          "canonical": { "type": "boolean" },
+          "environment": { "type": "string" }
         }
       },
       "execution": "sync"
@@ -242,7 +261,7 @@
     },
     {
       "name": "data_catalog_ingest_publish",
-      "description": "发布已审核的 m0.ingest.v1 标准数据。在一个事务内写入规范实体版本、来源证据、产品索引关系和 Tracking Outbox；相同 TaskID+幂等键+载荷返回 duplicate，不同载荷返回冲突。",
+      "description": "发布已审核的 m0.ingest.v1 标准数据。在一个事务内写入规范实体版本、来源证据和 Tracking Outbox；相同 TaskID+幂等键+载荷返回 duplicate，不同载荷返回冲突。低层通用入口：不落派生关系边（has_bom/contains_material 等），单类型实体写入请优先用 m0_*_import facade（含派生关系/回填/BOM 抢占）。",
       "http": {
         "method": "POST",
         "path": "/api/m0/catalog/ingest/publish",
@@ -269,79 +288,99 @@
           "data": { "type": "object" }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "candidate"
     },
     {
       "name": "m0_products_import",
-      "description": "M0 canonical 产品导入 facade。只接受已审核的 m0.ingest.v1 product 记录，并在 PostgreSQL canonical transaction 中写入实体、版本、来源、索引和 projection Outbox。",
+      "description": "M0 canonical 产品导入 facade。只接受已审核的 m0.ingest.v1 product 记录，并在 canonical transaction 中写入实体、版本、来源和 projection Outbox。入口定位：typed 直发 facade，与 data_import_run+data_import_commit 的批次人工裁决链并列；主链 workflows 未调用，需显式选择。",
       "http": { "method": "POST", "path": "/api/m0/v1/products/import", "timeout_s": 120 },
       "input_schema": { "type": "object", "required": ["records"], "properties": { "records": { "type": "array", "minItems": 1 } } },
       "output_schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "type": "object" } } },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "candidate"
     },
     {
       "name": "m0_orders_import",
-      "description": "M0 canonical 订单导入 facade。订单行和产品引用在同一 PostgreSQL transaction 中校验并写入。",
+      "description": "M0 canonical 订单导入 facade。订单行和产品引用在同一 canonical transaction 中校验并写入。入口定位：typed 直发 facade，与 data_import_run+data_import_commit 的批次人工裁决链并列；主链 workflows 未调用，需显式选择。",
       "http": { "method": "POST", "path": "/api/m0/v1/orders/import", "timeout_s": 120 },
       "input_schema": { "type": "object", "required": ["records"], "properties": { "records": { "type": "array", "minItems": 1 } } },
       "output_schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "type": "object" } } },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "candidate"
     },
     {
       "name": "m0_boms_import",
-      "description": "M0 canonical BOM 导入 facade。BOM 头、物料身份、BOM 行、来源证据和 projection Outbox 使用同一事务。",
+      "description": "M0 canonical BOM 导入 facade。BOM 头、物料身份、BOM 行、来源证据和 projection Outbox 使用同一事务；同产品 active 版本抢占。入口定位：typed 直发 facade，与 data_import_run+data_import_commit 的批次人工裁决链并列；主链 workflows 未调用，需显式选择。",
       "http": { "method": "POST", "path": "/api/m0/v1/boms/import", "timeout_s": 120 },
       "input_schema": { "type": "object", "required": ["records"], "properties": { "records": { "type": "array", "minItems": 1 } } },
       "output_schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "type": "object" } } },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "candidate"
     },
     {
       "name": "m0_materials_import",
-      "description": "M0 canonical 物料导入 facade。物料编码为稳定身份（不可带版本），name/unit/spec/aliases 进入同一 canonical 事务；发布后可通过 where-used 反查使用该物料的 BOM 与产品。",
+      "description": "M0 canonical 物料导入 facade。物料编码为稳定身份（不可带版本），name/unit/spec/aliases 进入同一 canonical 事务；发布后可通过 where-used 反查使用该物料的 BOM 与产品。入口定位：typed 直发 facade，与 data_import_run+data_import_commit 的批次人工裁决链并列；主链 workflows 未调用，需显式选择。",
       "http": { "method": "POST", "path": "/api/m0/v1/materials/import", "timeout_s": 120 },
       "input_schema": { "type": "object", "required": ["records"], "properties": { "records": { "type": "array", "minItems": 1 } } },
       "output_schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "type": "object" } } },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "candidate"
     },
     {
       "name": "m0_suppliers_import",
-      "description": "M0 canonical 供应商导入 facade。供应商编码为稳定身份，name/legal_id/status 与声明的供应物料编码（material_codes）进入同一 canonical 事务；物料入规范后自动回填 supplied_by 关系。",
+      "description": "M0 canonical 供应商导入 facade。供应商编码为稳定身份，name/legal_id/status 与声明的供应物料编码（material_codes）进入同一 canonical 事务；物料入规范后自动回填 supplied_by 关系。入口定位：typed 直发 facade，与 data_import_run+data_import_commit 的批次人工裁决链并列；主链 workflows 未调用，需显式选择。",
       "http": { "method": "POST", "path": "/api/m0/v1/suppliers/import", "timeout_s": 120 },
       "input_schema": { "type": "object", "required": ["records"], "properties": { "records": { "type": "array", "minItems": 1 } } },
       "output_schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "type": "object" } } },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "candidate"
     },
     {
       "name": "m0_equipment_import",
-      "description": "M0 canonical 设备导入 facade。设备编码为稳定身份，name/equipment_type/line/status 进入同一 canonical 事务；工艺路线与工序实体接入后用于工序-设备反查。",
+      "description": "M0 canonical 设备导入 facade。设备编码为稳定身份，name/equipment_type/line/status 进入同一 canonical 事务；工艺路线与工序实体接入后用于工序-设备反查。入口定位：typed 直发 facade，与 data_import_run+data_import_commit 的批次人工裁决链并列；主链 workflows 未调用，需显式选择。",
       "http": { "method": "POST", "path": "/api/m0/v1/equipment/import", "timeout_s": 120 },
       "input_schema": { "type": "object", "required": ["records"], "properties": { "records": { "type": "array", "minItems": 1 } } },
       "output_schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "type": "object" } } },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "candidate"
     },
     {
       "name": "m0_routes_import",
-      "description": "M0 canonical 工艺路线导入 facade。route_code+revision 为版本化身份，product_code 必须已是规范实体；operations 携带 sequence_no、工序/物料/设备/工装编码，未入规范的端点关系静默降级。",
+      "description": "M0 canonical 工艺路线导入 facade。route_code+revision 为版本化身份，product_code 必须已是规范实体；operations 携带 sequence_no、工序/物料/设备/工装编码，未入规范的端点关系静默降级。入口定位：typed 直发 facade，与 data_import_run+data_import_commit 的批次人工裁决链并列；主链 workflows 未调用，需显式选择。",
       "http": { "method": "POST", "path": "/api/m0/v1/routes/import", "timeout_s": 120 },
       "input_schema": { "type": "object", "required": ["records"], "properties": { "records": { "type": "array", "minItems": 1 } } },
       "output_schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "type": "object" } } },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "candidate"
     },
     {
       "name": "m0_operations_import",
-      "description": "M0 canonical 工序导入 facade。工序编码为稳定身份，name/standard_time/status 进入同一 canonical 事务；发布后回填 has_operation 及工序-物料/设备/工装边。",
+      "description": "M0 canonical 工序导入 facade。工序编码为稳定身份，name/standard_time/status 进入同一 canonical 事务；发布后回填 has_operation 及工序-物料/设备/工装边。入口定位：typed 直发 facade，与 data_import_run+data_import_commit 的批次人工裁决链并列；主链 workflows 未调用，需显式选择。",
       "http": { "method": "POST", "path": "/api/m0/v1/operations/import", "timeout_s": 120 },
       "input_schema": { "type": "object", "required": ["records"], "properties": { "records": { "type": "array", "minItems": 1 } } },
       "output_schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "type": "object" } } },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "candidate"
     },
     {
       "name": "m0_tooling_import",
-      "description": "M0 canonical 工装导入 facade。工装编码为稳定身份，name/tooling_type/status 进入同一 canonical 事务；发布后回填 requires_tooling 边。",
+      "description": "M0 canonical 工装导入 facade。工装编码为稳定身份，name/tooling_type/status 进入同一 canonical 事务；发布后回填 requires_tooling 边。入口定位：typed 直发 facade，与 data_import_run+data_import_commit 的批次人工裁决链并列；主链 workflows 未调用，需显式选择。",
       "http": { "method": "POST", "path": "/api/m0/v1/tooling/import", "timeout_s": 120 },
       "input_schema": { "type": "object", "required": ["records"], "properties": { "records": { "type": "array", "minItems": 1 } } },
       "output_schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "data": { "type": "object" } } },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "candidate"
     },
     {
       "name": "data_catalog_file_validate",
@@ -413,7 +452,9 @@
           "data": { "type": "object" }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "candidate"
     },
     {
       "name": "data_catalog_document_candidate_validate",
@@ -475,11 +516,13 @@
           "data": { "type": "object" }
         }
       },
-      "execution": "sync"
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "candidate"
     },
     {
       "name": "get_m0_product_overview",
-      "description": "按稳定产品编码查询订单、承认书、BOM 各修订、SOP、工程图、产品族和同系列产品索引，并返回版本、来源证据和同系列产品的索引数量。",
+      "description": "按稳定产品编码查询订单、BOM 各修订、文档索引与计数（产品视图的唯一实现，m0_facts.product_overview）；BOM 行请用该产品视图读回的修订，或直接用 list_m0_entities。主链 workflows 未调用本工具，供自由问答/写后读验证使用。",
       "http": {
         "method": "GET",
         "path": "/api/m0/catalog/products/{product_code}/overview",
@@ -503,7 +546,7 @@
     },
     {
       "name": "get_m0_product_graph",
-      "description": "按产品编码查询 1-3 跳规范关系图；默认两跳可看到产品族和同系列产品，三跳可继续看到同系列产品的订单/BOM/承认书/SOP/工程图。",
+      "description": "deprecated（主链零调用；产品事实请用 get_m0_product_overview，BOM 行请用 list_m0_entities）。按产品编码查询关系图：depth=1 只到 BOM/订单/文档节点，depth=2（默认）再展开 BOM 行→物料节点。产品族/同系列产品展开未实现。",
       "http": {
         "method": "GET",
         "path": "/api/m0/catalog/products/{product_code}/graph",
@@ -514,7 +557,7 @@
         "required": ["product_code"],
         "properties": {
           "product_code": { "type": "string" },
-          "depth": { "type": "integer", "minimum": 1, "maximum": 3, "default": 2 }
+          "depth": { "type": "integer", "minimum": 1, "maximum": 2, "default": 2 }
         }
       },
       "output_schema": {
@@ -528,7 +571,7 @@
     },
     {
       "name": "list_m0_documents",
-      "description": "按订单/物料/产品查询 M0 已入库的工程文档（工程图 engineering_drawing、工艺方法 process_method、包装方法 packing_method、测试方法 test_method 等），返回 doc_id、doc_type、标题、状态与绑定实体。当用户问某订单/产品的工程图、图纸、工程文档时使用本工具（M0 文档库按 order/material/product 绑定），优先于 M1 文档检索。返回的 doc_id 可让前端用 /api/m0/documents/{doc_id}/file 预览或下载。",
+      "description": "按物料/产品查询 M0 已入库的工程文档（工程图 engineering_drawing、工艺方法 process_method、包装方法 packing_method、测试方法 test_method 等），返回文档键、role、状态与绑定实体。当用户问某产品/物料的工程图、图纸、工程文档时使用本工具，优先于 M1 文档检索。返回的文档键可让前端用 /api/m0/documents/{doc_id}/file 预览或下载。注意：canonical 文档记录当前不带订单号，无法按 order 过滤。",
       "http": {
         "method": "GET",
         "path": "/api/m0/documents",
@@ -537,7 +580,6 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "order": { "type": "string", "description": "订单号（如 SO-HIST-20260724-005），返回绑定到该订单的文档。" },
           "material": { "type": "string", "description": "物料编码过滤（可选）。" },
           "product": { "type": "string", "description": "产品编码/名称过滤（可选）。" },
           "doc_type": { "type": "string", "description": "文档类型过滤（可选），如 engineering_drawing。" },
@@ -561,7 +603,7 @@
 ,
     {
       "name": "list_m0_inventory",
-      "description": "查询 M0 已入库的原料库存（m0_master_inventory），返回物料编码、物料名称、数量、单位、规格、仓库。当用户问原料库存、物料库存、有什么料、某物料还剩多少、库存数量时使用本工具；可按 material_code 精确过滤单个物料。",
+      "description": "查询 M0 已入库的原料库存（canonical entity_type=inventory，无 m0_master_* 表），返回物料编码、数量、仓库、批次、质检状态等字段。当用户问原料库存、物料库存、有什么料、某物料还剩多少、库存数量时使用本工具；可按 material_code 精确过滤单个物料。",
       "http": {
         "method": "GET",
         "path": "/api/m0/import/master/m0_master_inventory",
@@ -581,7 +623,8 @@
           "data": {
             "type": "object",
             "properties": {
-              "items": { "type": "array" }
+              "count": { "type": "integer" },
+              "inventory": { "type": "array" }
             }
           }
         }
