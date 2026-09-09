@@ -520,14 +520,57 @@ def _is_degraded(request: dict[str, Any]) -> bool:
     return bool(request.get("degraded") or request.get("legacy_preview"))
 
 
+def _planning_horizon_date(state: RunState) -> Any:
+    """排产地平线（显式 ``planning_start`` > 订单交期）→ ``date``；取不到返回 None。
+
+    只做「有没有一个可解析的日期」的判定，不做默认值填充（``_iso_date`` 的
+    2099 兜底是给快照字段用的，不能拿来当地平线）。
+    """
+    import re as _re
+    from datetime import date as _date
+
+    request = state.get("request", {})
+    order = read_order(state) if isinstance(state.get("request"), dict) else {}
+    for value in (request.get("planning_start"), order.get("due_date"),
+                  request.get("due_date"), order.get("due_time")):
+        text = str(value or "").strip()
+        if not text:
+            continue
+        match = _re.search(r"(\d{4})[年/\-.](\d{1,2})[月/\-.](\d{1,2})", text)
+        if not match:
+            continue
+        try:
+            return _date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            continue
+    return None
+
+
 def _degraded_calendar_snapshot(state: RunState) -> dict[str, Any]:
-    """降级默认日历：未来 7 天 08:00-17:00 单班（非权威，显式标记 degraded）。"""
+    """降级默认日历：**按排产地平线**生成的单班（08:00-17:00）窗口〔K5〕。
+
+    非权威默认，显式标记 ``degraded``/``source``。原实现硬编码「今天起未来 7 天」，
+    订单交期早于今天时日历里根本没有可用窗口 → ``NO_FEASIBLE_WINDOW``。确定性规则：
+
+    - ``start = min(今天 08:00, 地平线日 00:00) - 1 天``
+    - ``end   = max(今天, 地平线日) + 30 天``
+    - 每天一个单班窗口 08:00-17:00（``calendar_ref=CAL-DEGRADED``）；
+    - **未给交期/``planning_start``（或日期不可解析）→ 退化为原「今天起未来 7 天」行为**。
+    """
     from datetime import datetime, timedelta, timezone as _tz
 
-    start = datetime.now(_tz(timedelta(hours=8))).replace(hour=8, minute=0, second=0, microsecond=0)
+    tz = _tz(timedelta(hours=8))
+    start = datetime.now(tz).replace(hour=8, minute=0, second=0, microsecond=0)
+    horizon = _planning_horizon_date(state)
+    if horizon is None:
+        days = [start + timedelta(days=i) for i in range(7)]
+    else:
+        horizon_at = datetime(horizon.year, horizon.month, horizon.day, 8, 0, 0, tzinfo=tz)
+        first = min(start, horizon_at) - timedelta(days=1)
+        last = max(start, horizon_at) + timedelta(days=30)
+        days = [first + timedelta(days=i) for i in range((last.date() - first.date()).days + 1)]
     intervals: list[dict[str, Any]] = []
-    for i in range(7):
-        day = start + timedelta(days=i)
+    for day in days:
         intervals.append({
             "calendar_ref": "CAL-DEGRADED",
             "start_at": day.isoformat(),
@@ -542,6 +585,26 @@ def _degraded_calendar_snapshot(state: RunState) -> dict[str, Any]:
         "degraded": True,
         "source": "degraded-default-single-shift",
     }
+
+
+def _standard_minutes_of(step: dict[str, Any]) -> float | None:
+    """工序标准工时归一化（**口径 = 分钟**）〔K4〕。
+
+    - ``standard_minutes`` / ``processing_minutes``：直接按分钟取值；
+    - 只有 ``standard_time_s`` / ``standard_time`` 时按 **秒** 显式 /60
+      （M2 HTTP 合同的 ``standard_time`` 是秒，见 ``_normalize_m2_route_steps``）；
+    - 都没有 → None（由调用方兜底，**绝不编造工时**）。
+    """
+    for key in ("standard_minutes", "processing_minutes"):
+        value = step.get(key)
+        if value not in (None, ""):
+            return _num(value, None)  # type: ignore[arg-type]
+    for key in ("standard_time_s", "standard_time"):
+        value = step.get(key)
+        if value not in (None, ""):
+            seconds = _num(value, None)  # type: ignore[arg-type]
+            return None if seconds is None else seconds / 60
+    return None
 
 
 def _normalize_m5_route_steps(steps: list[dict[str, Any]], product_code: str) -> list[dict[str, Any]]:
@@ -560,14 +623,24 @@ def _normalize_m5_route_steps(steps: list[dict[str, Any]], product_code: str) ->
         if station and not step.get("required_station_codes"):
             step["required_station_codes"] = [station]
             step["station_code"] = station
-        if step.get("standard_minutes") is None and step.get("processing_minutes") is not None:
-            step["standard_minutes"] = step["processing_minutes"]
+        if step.get("standard_minutes") is None:
+            # K4：工时口径统一为分钟（只给秒的补数在此显式换算；无工时保持 None）。
+            minutes = _standard_minutes_of(step)
+            if minutes is not None:
+                step["standard_minutes"] = minutes
         normalized.append(step)
     return normalized
 
 
 def _degrade_resource_snapshot(resource_snapshot: dict[str, Any] | None, route_steps: list[dict[str, Any]]) -> dict[str, Any]:
-    """降级资源：设备补默认日历/产能/能力，工位从路线 station 名生成（非权威默认）。"""
+    """降级资源：设备补默认日历/产能/能力，工位从路线 station 名生成（非权威默认）。
+
+    K6：**已存在**的 stations/persons/tooling 也必须与设备同口径兜底——canonical
+    SOP 派生的工位常常没有 ``calendar_ref``/``status``/``parallel_slots``，M5 严格
+    校验（``pmc_v2_snapshots._validate_*``）会报 ``MISSING_VALUE ... calendar_ref``；
+    且 ``read_m5_resource_facts`` 优先于人工补数，门里补 ``resource_snapshot`` 也无效。
+    兜底只填**缺失**字段并打 ``degraded`` 标记，不覆盖任何已有事实。
+    """
     resource = dict(resource_snapshot) if isinstance(resource_snapshot, dict) else {}
     equipment: list[dict[str, Any]] = []
     seen_equipment: set[str] = set()
@@ -592,7 +665,28 @@ def _degrade_resource_snapshot(resource_snapshot: dict[str, Any] | None, route_s
         if not str(item.get("status") or "").strip():
             item["status"] = "ACTIVE"
         equipment.append(item)
-    stations: list[dict[str, Any]] = [dict(s) for s in (resource.get("stations") or []) if isinstance(s, dict)]
+    # K6：已存在的工位/人员/模治具逐条兜底（缺什么补什么，保持 degraded 标记）。
+    stations: list[dict[str, Any]] = []
+    for entry in (resource.get("stations") or []):
+        if not isinstance(entry, dict):
+            continue
+        item = dict(entry)
+        code = str(item.get("station_code") or "").strip()
+        if not code:
+            continue
+        if not str(item.get("station_name") or "").strip():
+            item["station_name"] = code
+        if not str(item.get("work_center_code") or "").strip():
+            item["work_center_code"] = code
+        if not isinstance(item.get("parallel_slots"), int) or isinstance(item.get("parallel_slots"), bool) \
+                or int(item.get("parallel_slots") or 0) < 1:
+            item["parallel_slots"] = 1
+        if not str(item.get("status") or "").strip():
+            item["status"] = "ACTIVE"
+        if not str(item.get("calendar_ref") or "").strip():
+            item["calendar_ref"] = "CAL-DEGRADED"
+        item["degraded"] = True
+        stations.append(item)
     if not stations:
         seen: set[str] = set()
         for step in route_steps:
@@ -609,13 +703,58 @@ def _degrade_resource_snapshot(resource_snapshot: dict[str, Any] | None, route_s
                 "calendar_ref": "CAL-DEGRADED",
                 "degraded": True,
             })
+    # K6：人员/模治具同样对**已存在**条目兜底（缺 calendar_ref/status 等字段时）。
+    persons: list[dict[str, Any]] = []
+    for entry in (resource.get("persons") or []):
+        if not isinstance(entry, dict):
+            continue
+        item = dict(entry)
+        code = str(item.get("person_code") or "").strip()
+        if not code:
+            continue
+        if not isinstance(item.get("skill_codes"), list):
+            item["skill_codes"] = ["generic"]
+        if not isinstance(item.get("qualified_operation_codes"), list):
+            item["qualified_operation_codes"] = []
+        if not isinstance(item.get("max_parallel_tasks"), int) or isinstance(item.get("max_parallel_tasks"), bool) \
+                or int(item.get("max_parallel_tasks") or 0) != 1:
+            item["max_parallel_tasks"] = 1
+        if not str(item.get("status") or "").strip():
+            item["status"] = "ACTIVE"
+        if not str(item.get("calendar_ref") or "").strip():
+            item["calendar_ref"] = "CAL-DEGRADED"
+        item["degraded"] = True
+        persons.append(item)
+    tooling_items: list[dict[str, Any]] = []
+    for entry in (resource.get("tooling") or []):
+        if not isinstance(entry, dict):
+            continue
+        item = dict(entry)
+        code = str(item.get("tooling_code") or "").strip()
+        if not code:
+            continue
+        if not str(item.get("tooling_type") or "").strip():
+            item["tooling_type"] = "generic"
+        if not isinstance(item.get("capability_codes"), list):
+            item["capability_codes"] = ["generic"]
+        if not isinstance(item.get("compatible_product_codes"), list):
+            item["compatible_product_codes"] = []
+        if not isinstance(item.get("quantity_available"), int) or isinstance(item.get("quantity_available"), bool) \
+                or int(item.get("quantity_available") or 0) < 1:
+            item["quantity_available"] = 1
+        if not str(item.get("status") or "").strip():
+            item["status"] = "ACTIVE"
+        if not str(item.get("calendar_ref") or "").strip():
+            item["calendar_ref"] = "CAL-DEGRADED"
+        item["degraded"] = True
+        tooling_items.append(item)
     resource.update({
         "snapshot_id": str(resource.get("snapshot_id") or "SNAP-RES-DEGRADED"),
         "revision": int(resource.get("revision") or 1),
         "equipment": equipment,
         "stations": stations,
-        "persons": resource.get("persons") or [],
-        "tooling": resource.get("tooling") or [],
+        "persons": persons,
+        "tooling": tooling_items,
         "degraded": True,
         "source": "degraded-resource-from-route",
     })
@@ -944,6 +1083,51 @@ def _assembly_payloads_from_state(state: RunState) -> dict[str, Any]:
     return payloads
 
 
+def forward_m1_order_canonical(files: list[dict[str, Any]], m1_output: Any) -> list[dict[str, Any]]:
+    """Canonical 模式（配置 ``YUNPAI_M0_DB``）的 M1→M0 前向组装〔K1〕。
+
+    逐行语义等价迁自 `_wt/REALFLOW/src/yunpai_langgraph/orchestration_bridge.py:872-912`
+    （W913 唯一跑通过全链的实现）。当 M1 已确定性解析出 ``m1.document.v2``
+    （order_id + lines 行项）且附件中没有现成 JSON 时，把订单转成
+    ``m0.ingest.v1`` 结构化 records 文件返回；否则原样返回（沙箱模式 /
+    raw 附件直达行为不变，raw 文件由 canonical store 隔离为
+    ``quarantined:[no_structured_records]`` → run=failed 且不开门）。
+    """
+    import base64 as _b64
+
+    if not files or not os.getenv("YUNPAI_M0_DB"):
+        return files
+    m1_doc = (m1_output or {}).get("document") if isinstance(m1_output, dict) else None
+    if not isinstance(m1_doc, dict):
+        return files
+    m1_header = m1_doc.get("header") if isinstance(m1_doc.get("header"), dict) else {}
+    m1_lines = m1_doc.get("lines") if isinstance(m1_doc.get("lines"), list) else []
+    order_id = str(m1_header.get("order_id") or m1_header.get("order_number") or "")
+    has_json = any(str(f.get("filename") or "").lower().endswith(".json")
+                   for f in files if isinstance(f, dict))
+    if not (order_id and m1_lines and not has_json):
+        return files
+    total_qty = sum(float(line.get("quantity") or 0) for line in m1_lines if isinstance(line, dict))
+    records = [{
+        "entity_type": "order",
+        "order_id": order_id,
+        "filename": "order-canonical.json",
+        "identity": {"business_key": order_id},
+        "payload": {
+            "order_id": order_id,
+            "order_number": m1_header.get("order_number") or order_id,
+            "product_code": m1_header.get("product_code")
+            or (str(m1_lines[0].get("product_code") or "") if m1_lines else ""),
+            "quantity": total_qty,
+            "due_date": m1_header.get("due_date"),
+            "lines": m1_lines,
+        },
+    }]
+    raw = json.dumps({"records": records}, ensure_ascii=False).encode("utf-8")
+    return [{"filename": "order-canonical.json", "content_type": "application/json",
+             "content_b64": _b64.b64encode(raw).decode()}]
+
+
 def bridge_payload(state: RunState, tool: str) -> dict[str, Any]:
     """为受控 workflow 的某个 tool 装配 payload；缺权威输入返回 BLOCKED_INPUT 结构。
 
@@ -1001,6 +1185,10 @@ def bridge_payload(state: RunState, tool: str) -> dict[str, Any]:
                            missing_fields=["ingest_document 输出或原始附件"],
                            required_tool="ingest_document")
         payload: dict[str, Any] = {"files": [file_value]}
+        # K1：Canonical 模式前向——M1 已解析的行项转成 order-canonical.json
+        # （与 REALFLOW graph._payload_for 同语义）。raw 附件直达会被 canonical
+        # store 隔离（no_structured_records）→ run=failed 且不开门。
+        payload["files"] = forward_m1_order_canonical(payload["files"], m1)
         return payload
     if tool == "data_import_preview":
         # S1 C3：预览需要批次号；从上游 data_import_run 产出回填（我方 graph.py:852-854 同口径）。
@@ -1303,9 +1491,23 @@ def bridge_payload(state: RunState, tool: str) -> dict[str, Any]:
                 continue
             op_id = str(step.get("operation_id") or step.get("op_code") or "")
             codes = [str(c) for c in (step.get("required_equipment_codes") or step.get("required_station_codes") or step.get("required_person_codes") or []) if c]
+            # K4：工时口径 = 分钟（秒/字符串在 _standard_minutes_of 处显式换算），
+            # 合同 processing_minutes 的 minimum=1 → 亚分钟工时兜底为 1 分钟
+            # （0 会被 solve 合同校验拒绝）。
+            minutes = _standard_minutes_of(step)
+            processing_minutes = max(1, int(minutes if minutes is not None else 1))
             eligible_resources = step.get("eligible_resources")
             if not eligible_resources:
-                eligible_resources = [{"resource_id": code, "processing_minutes": int(step.get("standard_minutes") or 1)} for code in codes]
+                eligible_resources = [{"resource_id": code, "processing_minutes": processing_minutes}
+                                      for code in codes]
+            if not eligible_resources:
+                # K4（对齐 REALFLOW orchestration_bridge.py:1268-1273）：SOP 工序只带
+                # 工位名（如「排卡」）时，用工位名作占位资源，满足 solve 工具合同的
+                # minItems=1；实际求解以 pmc_v2_bundle 的路线为准。
+                station_name = str(step.get("station") or step.get("station_code") or "").strip()
+                if station_name:
+                    eligible_resources = [{"resource_id": station_name,
+                                           "processing_minutes": processing_minutes}]
             routing_steps.append({
                 "product_id": str(step.get("product_id") or step.get("product_code") or product_code),
                 "operation_id": op_id,

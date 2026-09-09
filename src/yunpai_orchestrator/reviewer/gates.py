@@ -125,6 +125,14 @@ def apply_decision(state: dict[str, Any], gate: dict[str, Any],
         if isinstance(supplement, dict):
             request.setdefault(tool, {})
             request[tool] = {**request[tool], **supplement}
+            # K2/K3：装配层读的是**顶层** request 键（orchestration_bridge 的
+            # request["inventory_snapshot"]/request["supplier_by_material"]），
+            # 工具载荷兼容路径读 request[tool]（assembler 的显式参数覆盖）。
+            # 两条键路径都写入，门里补的数据才能被装配看见（None 不写入，
+            # 不覆盖已有事实）。
+            for key, value in supplement.items():
+                if value is not None:
+                    request[key] = value
         request["gate_retry"] = {"tool": tool, "mode": normalized, "at": at}
         updates["request"] = request
     return updates
