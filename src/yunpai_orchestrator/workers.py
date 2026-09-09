@@ -378,10 +378,17 @@ async def m2_bom(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]
     profile = payload["product_profile"]
     lines = payload.get("bom_lines") or []
     parse_issues: list[dict[str, Any]] = []
+    parsed_from_files = False
     if not lines and payload.get("bom_files"):
         lines, parse_issues = _extract_uploaded_bom(payload.get("bom_files"))
+        parsed_from_files = True
     routing_steps = payload.get("routing_steps") or []
     if not profile.get("product_code") or not lines or parse_issues:
+        _m2_record_run(ctx, run_id=f"m2-{str(ctx.get('task_id') or 'task')[-10:]}",
+                       status="human_input_required",
+                       product_code=str(profile.get("product_code") or ""),
+                       product_name=str(profile.get("product_name") or ""),
+                       summary={"code": "BLOCKED_INPUT"})
         return {
             "status": "human_input_required", "run_id": f"m2-{ctx['task_id'][-10:]}",
             "workflow_sequence": ["validate_input"], "bom_generation": {"bom_lines": []},
@@ -391,7 +398,16 @@ async def m2_bom(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]
             ], "artifacts": {}, "code": "BLOCKED_INPUT",
         }
     duplicate_codes = sorted({code for code in (str(line.get("material_code") or "") for line in lines) if code and sum(1 for item in lines if str(item.get("material_code") or "") == code) > 1})
-    matching = {"status": "matched", "score": 1.0, "matched_by": ["product_code", "material_code"], "ambiguous_candidates": 0, "unmatched_fields": []}
+    # R3-1.1（P1-9）：本地草稿占位实现**不执行**历史 BOM 检索，因此不得返回
+    # {"status": "matched", "score": 1.0} 这类伪造成功标记（「不伪造事实」红线）。
+    # 真实相似度检索由 search_m2_bom_history 提供；契约描述已注明本字段为占位判定。
+    matching = {
+        "status": "not_run",
+        "reason": "本地草稿占位实现未执行历史 BOM/SOP 检索；真实相似度检索由 search_m2_bom_history 提供",
+        "matched_by": [],
+        "ambiguous_candidates": 0,
+        "unmatched_fields": [],
+    }
     fact_validation = validate_engineering_facts(
         product_code=profile.get("product_code"),
         bom_lines=lines,
@@ -403,10 +419,23 @@ async def m2_bom(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]
         sop_effective_from=payload.get("sop_effective_from"),
         sop_effective_to=payload.get("sop_effective_to"),
     )
+    _m2_record_run(ctx, run_id=f"m2-{str(ctx.get('task_id') or 'task')[-10:]}",
+                   status="draft_created",
+                   product_code=str(profile.get("product_code") or ""),
+                   product_name=str(profile.get("product_name") or ""),
+                   summary={"bom_lines": len(lines), "routing_steps": len(routing_steps),
+                            "missing_fields": [item["field"] for item in fact_validation.get("missing_fields", [])]})
+    # R3-1.3：workflow_sequence 必须与真实执行一致。本地草稿占位实现只做
+    # 「入参校验 →（可选）上传件解析 → 工程事实校验 → 草稿装配」，不做历史检索、
+    # BOM/SOP 生成与受控发布——那些只在 HTTP POST /api/run 的完整流水线里发生。
+    workflow_sequence = ["validate_input"]
+    if parsed_from_files:
+        workflow_sequence.append("parse_sources")
+    workflow_sequence.append("engineering_fact_validation")
     return {
         "success": True,
         "status": "draft_created", "run_id": f"m2-{ctx['task_id'][-10:]}",
-        "workflow_sequence": ["parse_sources", "history_search", "match_bom_sop", "bom_generate", "sop_generate"],
+        "workflow_sequence": workflow_sequence,
         "bom_generation": {"product_code": profile["product_code"], "bom_version": "draft-1", "bom_lines": lines, "assumptions": [], "duplicate_material_codes": duplicate_codes, "evidence": [_evidence("m2", "bom_lines", "受控 BOM 输入")]},
         "sop_generation": {"status": "draft", "operation_count": len(routing_steps or lines), "source_files": payload.get("sop_files") or []},
         "engineering_fact_validation": fact_validation,
@@ -417,6 +446,25 @@ async def m2_bom(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]
         ], "artifacts": {},
         "evidence": [_evidence("m2", "workflow", "BOM/SOP draft")],
     }
+
+
+def _m2_record_run(ctx: dict[str, Any], *, run_id: str, status: str,
+                   product_code: str = "", product_name: str = "",
+                   order_id: str = "", summary: dict[str, Any] | None = None) -> None:
+    """env-gated run 落库（YUNPAI_M2_DB 或 ctx.m2_db 设置才写；best-effort 不影响主链）。"""
+    import os
+
+    if not (os.getenv("YUNPAI_M2_DB") or ctx.get("m2_db")):
+        return
+    try:
+        from .m2_local import M2RunStore
+
+        M2RunStore(ctx.get("m2_db") or None).save_run(
+            tenant_id=str(ctx.get("tenant_id") or "default"), run_id=run_id,
+            tool="run_bom_sop_workflow", status=status, order_id=order_id,
+            product_code=product_code, product_name=product_name, summary=summary or {})
+    except Exception:  # noqa: BLE001 - 可选记录层失败不阻断主链（R034 注记）
+        pass
 
 
 async def m3_mrp(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
@@ -655,6 +703,12 @@ def _m5(name: str):
     return M5_HANDLERS[name]
 
 
+def _m2(name: str):
+    """Lazily import the local M2 BOM/SOP handler for a manifest tool name."""
+    from .m2_local import LOCAL_HANDLERS
+    return LOCAL_HANDLERS[name]
+
+
 async def sample_file(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     """确定性采样：把文件压成 LLM 可看的表头 + 前 N 行样本，不伪造内容。"""
     from .recognized_store import sample_file as _sample
@@ -787,6 +841,15 @@ HANDLERS = {
     "data_import_commit": m0_commit,
     "ingest_document": m1_parse,
     "run_bom_sop_workflow": m2_bom,
+    # ── M2 BOM/SOP 本地实现（契约见 registry-manifests/m2.json；rows-S3.md）──
+    # run_bom_sop_workflow 保留 V2 既有 m2_bom（已同步 P1-9 修复）；其余 6 个由
+    # m2_local.LOCAL_HANDLERS 惰性提供。
+    "search_m2_bom_history": _m2("search_m2_bom_history"),
+    "generate_m2_bom_controlled": _m2("generate_m2_bom_controlled"),
+    "onboard_m2_bom_template": _m2("onboard_m2_bom_template"),
+    "generate_m2_sop": _m2("generate_m2_sop"),
+    "list_m2_runs": _m2("list_m2_runs"),
+    "get_m2_run": _m2("get_m2_run"),
     "run_m3_procurement_requirements": m3_mrp,
     "import_m4_purchase_suggestions_json": m4_purchase,
     "solve_scheduling": m5_schedule,

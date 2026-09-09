@@ -4,7 +4,7 @@
   "tools": [
     {
       "name": "run_bom_sop_workflow",
-      "description": "BOM/SOP 生成 Agent。接受结构化产品信息（产品名/编码/规格），检索历史 BOM 记录，生成草稿 BOM（物料清单）和 SOP（标准作业指导书 Word 文档）。核心流程：① 分析历史 BOM 模板 ② 入库历史数据 ③ 多维度相似度检索历史 BOM ④ 受控生成草稿 BOM（规则+可选LLM）⑤ 生成 80806-129 格式 SOP Word 文档（含工序流程图）。当用户需要根据产品需求生成 BOM 物料清单或 SOP 工艺文档时使用。所有输出为草稿状态(draft_created/human_input_required)，需人工审核。",
+      "description": "BOM/SOP 生成工具。完整受控流水线（①分析历史 BOM 模板 ②入库历史数据 ③多维度相似检索历史 BOM ④受控生成草稿 BOM ⑤生成 80806-129 格式 SOP Word 文档）由 HTTP 服务（POST /api/run）提供；本地 transport 下为**草稿占位实现**：只做工程事实校验（产品编码/BOM 行/工序）并把入参 BOM 行回显为 draft，不执行历史检索、模板分析、受控 BOM 与 SOP Word 生成，artifacts 恒为空。输出恒为草稿（draft_created）或缺权威输入（human_input_required），必须人工审核；不得把本地占位结果当作已完成生成。",
       "http": {
         "method": "POST",
         "path": "/api/run",
@@ -34,15 +34,72 @@
           "requirement_text": {
             "type": "string"
           },
+          "document_no": {
+            "type": "string",
+            "description": "SOP 文档编号；本地草稿占位实现仅回显，不产 Word。"
+          },
           "rule_package_path": {
             "type": "string",
-            "description": "受控 BOM 和物料编码规则包目录或 ZIP；禁用 demo 时必填。"
+            "description": "受控 BOM 和物料编码规则包。本地实现要求可读的 JSON 规则包文件；HTTP 服务端另支持目录或 ZIP。禁用 demo 时必填。本地草稿占位实现不读取该字段。"
           },
           "history_bom_paths": {
             "type": "array",
             "items": {
               "type": "string"
             }
+          },
+          "history_sop_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "历史 SOP/工艺文件路径；本地草稿占位实现不消费。"
+          },
+          "bom_lines": {
+            "type": "array",
+            "description": "已确认 BOM 行（本地实现的直接输入；行内 material_code/quantity/uom 参与事实校验）。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "bom_items": {
+            "type": "array",
+            "description": "M2 契约口径的 BOM 行（item_no/material_code/name/specification/quantity/note）；与 bom_lines 二选一。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "bom_version": {
+            "type": "string"
+          },
+          "bom_effective_from": {
+            "type": "string"
+          },
+          "bom_effective_to": {
+            "type": "string"
+          },
+          "sop_version": {
+            "type": "string"
+          },
+          "sop_effective_from": {
+            "type": "string"
+          },
+          "sop_effective_to": {
+            "type": "string"
+          },
+          "bom_files": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "上传的 BOM 源文件（base64 file object）；本地实现按 _extract_uploaded_bom 解析，HTTP 服务消费。"
+          },
+          "sop_files": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "上传的 SOP 源文件（base64 file object）；本地草稿占位实现仅回显。"
           },
           "use_demo_sources": {
             "type": "boolean",
@@ -81,6 +138,10 @@
       "output_schema": {
         "type": "object",
         "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "草稿装配成功标记；本地实现仅此路径返回 true（缺权威输入路径返回 code=BLOCKED_INPUT）。"
+          },
           "status": {
             "type": "string",
             "description": "draft_created | human_input_required | failed"
@@ -90,7 +151,7 @@
           },
           "workflow_sequence": {
             "type": "array",
-            "description": "执行的步骤序列。"
+            "description": "实际执行的步骤序列。本地草稿占位实现只返回 validate_input（+ parse_sources / engineering_fact_validation），不代表历史检索与生成步骤真的执行。"
           },
           "bom_generation": {
             "type": "object",
@@ -98,7 +159,7 @@
           },
           "sop_generation": {
             "type": "object",
-            "description": "SOP 生成结果（Word 文档路径 + 流程图）。"
+            "description": "SOP 生成结果。本地草稿占位实现只返回 {status:'draft', operation_count, source_files}，不含 Word 文档路径与流程图；Word/流程图由 HTTP 服务或 generate_m2_sop 提供。"
           },
           "open_customer_questions": {
             "type": "array",
@@ -106,15 +167,33 @@
           },
           "artifacts": {
             "type": "object",
-            "description": "产物文件路径。"
+            "description": "产物文件路径。本地草稿占位实现恒为 {}（不产制品）；HTTP 服务返回真实路径。"
+          },
+          "code": {
+            "type": "string",
+            "description": "业务码（如 BLOCKED_INPUT）；无缺口时不返回。"
+          },
+          "matching": {
+            "type": "object",
+            "description": "BOM/SOP 匹配判定。本地实现为占位判定（status=not_run，不调用历史检索）；真实相似度检索请用 search_m2_bom_history。"
+          },
+          "engineering_fact_validation": {
+            "type": "object",
+            "description": "m2_fact_validation.validate_engineering_facts 的字段级就绪结果（status/missing_fields/validation_issues/counts）。"
+          },
+          "evidence": {
+            "type": "array",
+            "description": "证据项（module/source_ref/evidence_ref/detail）。"
           }
         }
       },
+      "side_effect": "local_write",
+      "review_gate": "engineering",
       "execution": "sync"
     },
     {
       "name": "search_m2_bom_history",
-      "description": "Search historical BOM library. Multi-dimensional similarity matching, returns reuse candidates + open questions.",
+      "description": "Search historical BOM library. Multi-dimensional similarity matching over m2_history_lines, M0 canonical BOM entities (read through the V2 M0 read port M0Store.list_entities when YUNPAI_M0_DB is configured) and explicit history_paths; returns reuse candidates sorted by score. Returns an empty array when nothing matches (never fabricated); read-port failures are reported in warnings instead of being silently swallowed. Open questions are raised by the caller's Gate, not by this read-only tool.",
       "http": {
         "method": "POST",
         "path": "/api/bom/history/search",
@@ -152,14 +231,23 @@
         "properties": {
           "results": {
             "type": "array"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "候选来源降级说明（如 M0 canonical 读口不可用）；空数组=全部来源正常。"
           }
         }
       },
+      "side_effect": "none",
+      "review_gate": "none",
       "execution": "sync"
     },
     {
       "name": "generate_m2_bom_controlled",
-      "description": "Controlled draft BOM generation. Based on historical BOM + rule package + product requirements.",
+      "description": "Controlled draft BOM generation. Based on historical BOM + rule package + product requirements. 本地实现要求 rule_package_path 为可读的 JSON 规则包文件（HTTP 服务端另支持目录/ZIP）；无确定性依据时返回空 bom_lines + note，不伪造行。写入 m2_history_lines/m2_runs。",
       "http": {
         "method": "POST",
         "path": "/api/bom/generate-controlled",
@@ -173,16 +261,26 @@
         ],
         "properties": {
           "product_profile": {
-            "type": "object"
+            "type": "object",
+            "description": "产品档案；内嵌 lines/bom_items 为本地实现的确定性行来源。"
           },
           "rule_package_path": {
-            "type": "string"
+            "type": "string",
+            "description": "JSON 规则包文件（column_aliases/duplicate_policy/default_uom）。"
           },
           "history_paths": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "无内嵌行时的历史基底（xlsx/csv/json）。"
+          },
+          "bom_items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "与 product_profile.lines 等价的顶层行输入（二者取其一）。"
           }
         }
       },
@@ -194,11 +292,13 @@
           }
         }
       },
+      "side_effect": "local_write",
+      "review_gate": "authorization",
       "execution": "sync"
     },
     {
       "name": "onboard_m2_bom_template",
-      "description": "Analyze historical BOM files, extract column structure and numbering rules, generate template proposals.",
+      "description": "Analyze historical BOM files, extract column structure and numbering rules, generate template proposals. 本地实现把历史行写入 m2_history_lines、模板写入 m2_templates（product_code 不猜；product_name 取历史文件名 stem，保证后续按产品名检索可召回）。",
       "http": {
         "method": "POST",
         "path": "/api/bom/templates/onboard",
@@ -211,13 +311,15 @@
         ],
         "properties": {
           "rule_package_path": {
-            "type": "string"
+            "type": "string",
+            "description": "JSON 规则包文件；本地实现仅做可读性校验。"
           },
           "history_paths": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "历史 BOM 文件（xlsx/csv/json）；不可读时显式失败，不静默跳过。"
           }
         }
       },
@@ -229,11 +331,13 @@
           }
         }
       },
+      "side_effect": "local_write",
+      "review_gate": "authorization",
       "execution": "sync"
     },
     {
       "name": "generate_m2_sop",
-      "description": "Generate 80806-129 format SOP Word document with process flowchart.",
+      "description": "Generate 80806-129 format SOP Word document. 本地实现只产文字流程（flowchart.status=text_only），不生成 PNG 图形流程图（图形流程图由 HTTP 服务提供）；制品目录可用 YUNPAI_M2_ARTIFACT_DIR 覆盖（缺省 runtime/m2-artifacts）。",
       "http": {
         "method": "POST",
         "path": "/api/sop/generate",
@@ -261,6 +365,10 @@
           },
           "routing_steps": {
             "type": "array"
+          },
+          "order_id": {
+            "type": "string",
+            "description": "可选订单号；写入 run 记录便于 list_m2_runs 过滤。"
           }
         }
       },
@@ -271,10 +379,17 @@
             "type": "string"
           },
           "artifacts": {
-            "type": "object"
+            "type": "object",
+            "description": "docx 制品路径 + document_no/product_name/part_no 回显。"
+          },
+          "flowchart": {
+            "type": "object",
+            "description": "流程图状态；本地恒为 {status:'text_only', note:...}，不冒充已生成图形流程图。"
           }
         }
       },
+      "side_effect": "local_write",
+      "review_gate": "authorization",
       "execution": "sync"
     },
     {
@@ -327,6 +442,8 @@
           }
         }
       },
+      "side_effect": "none",
+      "review_gate": "none",
       "execution": "sync"
     },
     {
@@ -365,6 +482,8 @@
           }
         }
       },
+      "side_effect": "none",
+      "review_gate": "none",
       "execution": "sync"
     }
   ]

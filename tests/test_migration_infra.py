@@ -23,9 +23,12 @@ MIGRATED_MODULES = (
 )
 
 SKELETON_MODULES = (
-    "m2_local", "m3_local", "m4_purchase_local", "m4_supplier_local",
+    "m3_local", "m4_purchase_local", "m4_supplier_local",
     "m4_tracking_local", "m5_work_local",
 )
+# 注：``m2_local`` 已由 M2 分片迁完（INFRA-DECISIONS §2.6.2：把 PORT_HANDLERS 改写成
+# 真正的 LOCAL_HANDLERS 并删除 PORT_SYMBOLS），因此不再属于骨架模块。其余骨架由各自
+# 分片迁完后同样从这里移除；M-INFRA 可统一改成「有 LOCAL_HANDLERS 即视为已迁完」。
 
 
 class _FakeRegistry:
