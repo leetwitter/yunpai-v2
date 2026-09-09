@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -16,7 +17,8 @@ from yunpai_orchestrator.registry import build_default_registry
 
 
 def _m0_schema(name: str) -> dict:
-    data = json.load(open("registry-manifests/m0.json"))
+    # 显式 UTF-8：Windows 默认 locale（cp936）会把 manifest 里的中文读崩。
+    data = json.loads(Path("registry-manifests/m0.json").read_text(encoding="utf-8"))
     return next(tool for tool in data["tools"] if tool["name"] == name)
 
 
