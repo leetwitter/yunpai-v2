@@ -30,7 +30,12 @@ def test_production_http_runtime_binds_all_m1_tools_with_dedicated_adapter(monke
 
 
 @pytest.mark.asyncio
-async def test_local_fixture_ingest_succeeds_only_for_json_and_is_marked_fixture():
+async def test_local_ingest_succeeds_for_json_and_persists_a_real_task(tmp_path, monkeypatch):
+    """S2 M1-1：``ingest_document`` 已从 fixture/preview 版换成
+    ``m1_domain.process_upload_file`` 真实本地实现（rows-S2 第 1 行「替换 V2
+    现有 fixture 版」）——provider=local、有任务持久化，且 ``fixture`` 为 False。
+    """
+    monkeypatch.setenv("YUNPAI_M1_DB", str(tmp_path / "m1.sqlite"))
     registry = build_default_registry()
     payload = {
         "file": {
@@ -41,12 +46,19 @@ async def test_local_fixture_ingest_succeeds_only_for_json_and_is_marked_fixture
     }
     result = await registry.call("ingest_document", payload, {"task_id": "T-1", "tenant_id": "TENANT-1"})
     assert result["status"] in {"done", "needs_review"}
-    assert result["provider"] == "local_fixture"
-    assert result["fixture"] is True
+    assert result["provider"] == "local"
+    assert result["fixture"] is False
+    assert result["environment"] == "local_m1"
+    # 真实持久化：同一 registry 上能按 task_id 回读该任务与文档。
+    task = await registry.call("get_m1_task", {"task_id": result["task_id"]},
+                               {"task_id": "T-1", "tenant_id": "TENANT-1"})
+    assert task["task_id"] == result["task_id"]
+    assert task["document_schema_version"] == "m1.document.v2"
 
 
 @pytest.mark.asyncio
-async def test_local_fixture_fails_closed_on_non_json_binary_without_masquerading():
+async def test_local_ingest_fails_closed_on_unparseable_binary_without_masquerading(tmp_path, monkeypatch):
+    monkeypatch.setenv("YUNPAI_M1_DB", str(tmp_path / "m1.sqlite"))
     registry = build_default_registry()
     payload = {
         "file": {
@@ -59,9 +71,25 @@ async def test_local_fixture_fails_closed_on_non_json_binary_without_masqueradin
     assert result["status"] == "failed"
     assert result["code"] == "LOCAL_FIXTURE_UNSUPPORTED_FORMAT"
     assert result["document"] is None
-    assert result["provider"] == "local_fixture"
-    # A failed fixture must never look like a completed full M1 parse.
+    assert result["provider"] == "local"
+    # A failed local parse must never look like a completed full M1 parse.
     assert result["needs_review"] is False
+    assert result["overall_confidence"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_fixture_injection_path_still_marks_itself_as_fixture(tmp_path, monkeypatch):
+    """``_fixture_document`` 注入路径（测试便利）保持 provider=local_fixture /
+    ``fixture=True``——绝不与真实本地解析混淆（R027 登记语义）。"""
+    monkeypatch.setenv("YUNPAI_M1_DB", str(tmp_path / "m1.sqlite"))
+    registry = build_default_registry()
+    payload = {
+        "file": {"filename": "injected.bin", "content_b64": base64.b64encode(b"not-json").decode()},
+        "_fixture_document": {"order_id": "SO-FIX", "lines": [{"product_code": "W-1", "quantity": 2}]},
+    }
+    result = await registry.call("ingest_document", payload, {"task_id": "T-1", "tenant_id": "TENANT-1"})
+    assert result["provider"] == "local_fixture"
+    assert result["fixture"] is True
 
 
 @pytest.mark.asyncio
