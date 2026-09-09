@@ -322,3 +322,36 @@ def test_m2_tools_are_bound_local_and_visible_in_catalog():
     visible = set(visible_tool_names(registry))
     assert set(M2_LOCAL_TOOLS) <= visible
     assert set(M2_LOCAL_TOOLS) <= set(CatalogView(registry).specs)
+
+
+# ---------- Skill 可达性（rows-S3 备注：onboard/list_runs 原先经 Skill 不可达） ----------
+
+def test_m2_skill_operation_map_covers_onboard_and_runs():
+    from yunpai_orchestrator.skills import M2_SKILL_OPERATION_MAP, build_default_skill_registry
+
+    spec = build_default_skill_registry().specs["yunpai-m2-bom-sop"]
+    assert M2_SKILL_OPERATION_MAP["onboard"] == "onboard_m2_bom_template"
+    assert M2_SKILL_OPERATION_MAP["runs"] == "list_m2_runs"
+    # operation map 与 SkillSpec.tools 同源（不再手写两份白名单）
+    assert set(M2_SKILL_OPERATION_MAP.values()) <= set(spec.tools)
+    assert set(spec.tools) == set(M2_SKILL_OPERATION_MAP.values())
+
+
+@pytest.mark.asyncio
+async def test_m2_skill_reaches_onboard_then_runs(monkeypatch, tmp_path):
+    """经 Skill 走 operation=onboard / runs 必须真的能落库并读回。"""
+    from yunpai_orchestrator.skills import build_default_skill_registry
+
+    monkeypatch.setenv("YUNPAI_M2_DB", str(tmp_path / "m2.sqlite"))
+    skills = build_default_skill_registry(build_default_registry())
+    ctx = {"tenant_id": "T-A", "task_id": "T-SKILL"}
+    onboarded = await skills.call(
+        "yunpai-m2-bom-sop",
+        {"operation": "onboard", "rule_package_path": _rule_file(tmp_path),
+         "history_paths": [_history_csv(tmp_path)]},
+        ctx)
+    assert onboarded["invoked_tool"] == "onboard_m2_bom_template"
+    assert onboarded["proposals"]
+    runs = await skills.call("yunpai-m2-bom-sop", {"operation": "runs", "limit": 5}, ctx)
+    assert runs["invoked_tool"] == "list_m2_runs"
+    assert _unwrap_total(runs) == 1
