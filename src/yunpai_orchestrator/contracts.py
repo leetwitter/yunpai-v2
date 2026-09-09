@@ -7,6 +7,18 @@ ToolHandler = Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any
 
 CONTRACT_STATUSES = frozenset({"success", "candidate", "blocked", "conflict", "failed"})
 
+#: HTTP 适配器里显式走 query 参数的输入字段（R4-REQ-5 manifest 化前的兼容表）。
+#: manifest 声明 ``http.query_fields`` 时以 manifest 为准（见 ``registry._http_query_fields``）。
+HTTP_QUERY_FIELDS: dict[str, frozenset[str]] = {
+    "get_persisted_m3_plan": frozenset({"tenant_id"}),
+    "get_pr_po_drafts": frozenset({"tenant_id"}),
+    "approve_m3_task": frozenset({"tenant_id"}),
+    "reject_m3_task": frozenset({"tenant_id"}),
+    "request_change_m3_task": frozenset({"tenant_id"}),
+    "approve_to_send_m3_task": frozenset({"tenant_id"}),
+    "list_m0_entities": frozenset({"entity_type", "tenant_id"}),
+}
+
 
 class ContractList(list):
     """List-shaped transport result with non-invasive Goal metadata."""
@@ -90,6 +102,9 @@ class ToolSpec:
     failure_codes: tuple[str, ...] = field(default_factory=tuple)
     recovery_actions: tuple[str, ...] = field(default_factory=tuple)
     downstream_fields: tuple[str, ...] = field(default_factory=tuple)
+    #: manifest ``http.query_fields``：显式走 query 参数的输入字段（R4-REQ-5）。
+    #: 为空时回退到 ``HTTP_QUERY_FIELDS``（兼容未升级的第三方 manifest）。
+    query_fields: tuple[str, ...] = field(default_factory=tuple)
 
     def as_mcp_tool(self) -> dict[str, Any]:
         return {
