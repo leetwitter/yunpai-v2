@@ -47,6 +47,26 @@ RULES: dict[str, list[Check]] = {
         Check("success", "eq", True, action="gate:engineering",
               reason="M2 产出工程草稿需工程确认（engineering Gate 不得当 retry 使用）"),
     ],
+    # ── M2 写工具（rows-S3.md「需补审查」3 条，M2 分片补）──
+    # 旧架构对这三个工具开**执行前** authorization 门：它们既不在
+    # contracts.POST_REVIEWED_DRAFT_TOOLS，也不在 SAFE_LOCAL_TOOLS，自由模式下必须先授权
+    # （legacy/agents.py:382-384 → pre_execution authorization）。V2 新图唯一的开门点是
+    # reviewer_check_node（graph.py:205-209）在执行**之后**读本表的 findings，因此这里补
+    # 等价的后置 authorization 门：写入 m2_templates/m2_history_lines/m2_runs/制品目录的
+    # 工具必须人工授权（operator/admin）才能继续，不得被 LLM 置信度绕过。
+    # 前置门本身的缺口是系统性设计问题，已登记 REQUESTS-MIG-M2.md。
+    "generate_m2_bom_controlled": [
+        Check("standard_bom", "ne", None, action="gate:authorization",
+              reason="M2 受控 BOM 写入 m2_history_lines/m2_runs，须人工授权（旧架构为执行前 authorization 门）"),
+    ],
+    "onboard_m2_bom_template": [
+        Check("proposals", "ne", None, action="gate:authorization",
+              reason="M2 模板 onboard 写入 m2_templates/m2_history_lines，须人工授权（旧架构为执行前 authorization 门）"),
+    ],
+    "generate_m2_sop": [
+        Check("status", "eq", "generated", action="gate:authorization",
+              reason="M2 SOP 制品落盘（docx）+ run/artifact 记录，须人工授权（旧架构为执行前 authorization 门）"),
+    ],
     "ingest_canonical": [
         Check("success", "eq", True, action="gate:candidate",
               reason="canonical 候选落库须 M0 candidate Gate 审批后发布"),
