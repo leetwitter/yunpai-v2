@@ -5,9 +5,21 @@ tools, backed by :class:`M5Repository`.  Every handler follows the m5.json
 manifest contract: ``{success, data, errors, trace_id}`` plus optional
 ``evidence``.  Read-only evidence tools never fabricate plan facts.
 
+V2 信封口径（迁移改造项 ②）：阻塞结果顶层必须带 ``code``。V2 的
+``worker/executor.py:83-90`` 只认顶层 ``code`` 判 ``status="blocked"``，
+``reviewer/rules.py:115`` 只认顶层 ``code == "BLOCKED_INPUT"`` 开
+data/blocked_input Gate；只有 ``errors[0].code`` 会被判成硬失败（重试耗尽即失败）。
+因此本模块统一用 :func:`_blocked_result`：顶层 ``code="BLOCKED_INPUT"``，
+具体原因保留在 ``errors[0].code``（与 ``workers.py:428/499/529/606`` 同形）。
+两个例外受合同强制：``get_m5_pmc_progress``（output schema 顶层
+``additionalProperties:false`` + ``success const true`` + ``errors maxItems 0``）与
+``record_m5_knowledge``（``data.required`` 为 11 个业务字段）无法返回错误信封，
+保持 INT 的 fail-closed 异常语义。
+
 The repository path is resolved from the context ``m5_db_path`` (tests /
 embedding) or the ``YUNPAI_M5_DB`` env var, defaulting to
-``runtime/yunpai-m5.sqlite``.
+``runtime/yunpai-m5.sqlite``。V2 的 ``tool_context()`` 不提供 ``m5_db_path``
+（INFRA-DECISIONS §1.2 裁定不补），部署与测试统一走 ``YUNPAI_M5_DB``。
 """
 from __future__ import annotations
 
@@ -55,9 +67,22 @@ def _task(ctx: dict[str, Any] | None) -> str:
 
 
 def _blocked_result(message: str, trace_id: str, *, code: str = "BLOCKED_INPUT",
-                    details: list[Any] | None = None) -> dict[str, Any]:
-    return {"success": False, "data": {}, "errors": [_err(code, message, details)],
+                    details: list[Any] | None = None,
+                    data: dict[str, Any] | None = None) -> dict[str, Any]:
+    """可恢复阻塞信封：顶层 ``code="BLOCKED_INPUT"`` + ``errors[0].code`` 具体原因。
+
+    见模块头注（改造项 ②）。``data`` 用于满足个别合同的 ``data.required``
+    （如 ``get_m5_schedule`` 要求 ``scenario_purpose``/``next_event_sequence``）。
+    """
+    return {"success": False, "status": "blocked", "code": "BLOCKED_INPUT",
+            "data": dict(data or {}),
+            "errors": [_err(code, message, details)],
             "trace_id": trace_id, "evidence": [_evidence("m5", code, message)]}
+
+
+def _block_code(blocks: list[Any] | None) -> str | None:
+    """求解内核产出 blocks 时，顶层补 ``BLOCKED_INPUT``（否则会被判硬失败）。"""
+    return "BLOCKED_INPUT" if blocks else None
 
 
 def _purpose_of(payload: dict[str, Any]) -> str:
@@ -74,6 +99,28 @@ async def m5_ingest_snapshot(payload: dict[str, Any], ctx: dict[str, Any]) -> di
     if not scenario_id:
         return _blocked_result("缺少 scenario_id", _trace(ctx, "m5-ingest"),
                                code="MISSING_SCENARIO")
+    if payload.get("replace_existing") is False:
+        # 本地实现是整包替换（store_snapshots 先删后写）。增量合并尚未实现，
+        # 因此 fail-closed：绝不把 false 静默当成整包覆盖（会删掉未提供的实体）。
+        return {
+            "success": False,
+            "status": "blocked",
+            "code": "BLOCKED_INPUT",
+            "data": {
+                "scenario_id": scenario_id,
+                "replace_existing": False,
+                "missing_fields": ["replace_existing=false（增量合并）"],
+                "recovery": "本地实现只支持整包替换：改传 replace_existing=true 重试，"
+                            "或先读出当前六类快照、在调用方按业务稳定键合并后整包提交",
+            },
+            "errors": [{"code": "UNSUPPORTED_INCREMENTAL_MERGE",
+                        "message": "本实现不支持 replace_existing=false 的增量合并；"
+                                   "已拒绝，未做任何写入",
+                        "details": [{"supported": [True]}]}],
+            "trace_id": _trace(ctx, "m5-ingest"),
+            "evidence": [_evidence("m5", "planning_snapshot",
+                                   "incremental merge rejected (fail-closed, no write)")],
+        }
     repo = _repo(ctx)
     # production/pressure_only ingestion: build and validate the six-kind
     # bundle (facts only), then persist.  Full solving is NOT run here: a
@@ -145,11 +192,9 @@ async def m5_get_schedule(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[
     repo = _repo(ctx)
     plan = repo.get_plan(plan_version) if plan_version else None
     if plan is None:
-        return {"success": False,
-                "data": {"scenario_purpose": "production", "next_event_sequence": 1},
-                "errors": [_err("PLAN_NOT_FOUND", f"计划 {plan_version} 不存在")],
-                "trace_id": _trace(ctx, "m5-get-schedule"),
-                "evidence": [_evidence("m5", "plan", "plan not found")]}
+        return _blocked_result(f"计划 {plan_version} 不存在", _trace(ctx, "m5-get-schedule"),
+                               code="PLAN_NOT_FOUND",
+                               data={"scenario_purpose": "production", "next_event_sequence": 1})
     schedule = plan.get("schedule") or {}
     head = repo.get_head(plan.get("scenario_id") or "")
     next_seq = len(repo.list_execution_events(plan_version)) + len(repo.lifecycle_events(plan_version)) + 1
@@ -351,7 +396,13 @@ async def m5_material_readiness(payload: dict[str, Any], ctx: dict[str, Any]) ->
 # ---------------------------------------------------------------------------
 
 async def m5_integration_contracts(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """M5 侧静态声明的集成契约目录。
+
+    目录内容是本模块写死的声明，不探活对端、不读实时集成状态、也不校验对端是否
+    已实现 schema；``source`` 字段显式标注这一点，避免调用方把声明值当成实时状态。
+    """
     data = {
+        "source": "static_declaration",
         "contracts": {
             "m1": {"direction": "outbound", "readiness": "available",
                    "deliverables": ["order_route_facts", "wip_snapshot"]},
@@ -370,12 +421,13 @@ async def m5_integration_contracts(payload: dict[str, Any], ctx: dict[str, Any])
             "mes": {"direction": "outbound", "readiness": "proposed",
                     "deliverables": ["dispatch"], "note": "当前无 MES sender，只保留 pending"},
         },
-        "note": "schema 仅为 M5 侧载荷结构，不代表对端接口已可用",
+        "note": "静态声明目录：readiness 为 M5 侧声明值，不探活、不代表对端接口当前可用；"
+                "schema 仅为 M5 侧载荷结构，不代表对端接口已可用",
     }
     return {"success": True, "data": data, "errors": [],
             "trace_id": _trace(ctx, "m5-contracts"),
             "evidence": [_evidence("m5", "integration_contracts",
-                                   "read-only module contract catalog")]}
+                                   "static declaration catalog (no live probe)")]}
 
 
 # ---------------------------------------------------------------------------
@@ -554,7 +606,11 @@ def _build_progress(plan, is_current_head):
 async def m5_pmc_progress(payload, ctx):
     """Only a released, production, current-head plan is a valid progress
     context (m5.json output schema: errors maxItems=0 and authority consts).
-    Everything else fails closed with an exception."""
+    Everything else fails closed with an exception.
+
+    V2 信封例外：合同顶层 ``additionalProperties:false`` + ``success const true``
+    + ``errors maxItems 0``，无法表达错误信封 → 保持异常（V2 归 ``TOOL_ERROR``
+    硬失败，这是合同强制的行为，不得为开 data 门而放宽 schema）。"""
     plan_version = str(payload.get("plan_version") or "")
     repo = _repo(ctx)
     plan = repo.get_plan(plan_version) if plan_version else None
@@ -730,11 +786,10 @@ async def m5_replan_schedule(payload: dict[str, Any], ctx: dict[str, Any]) -> di
     idem = str(payload.get("idempotency_key") or "")
     event = payload.get("event")
     def _replan_fail(code, message):
-        return {"success": False,
-                "data": {"result": {"schedule": {"scenario_purpose": "production"}},
-                         "scenario_purpose": "production", "input_hash": ""},
-                "errors": [_err(code, message)], "trace_id": _trace(ctx, "m5-replan"),
-                "evidence": [_evidence("m5", "replan", message)]}
+        return _blocked_result(
+            message, _trace(ctx, "m5-replan"), code=code,
+            data={"result": {"schedule": {"scenario_purpose": "production"}},
+                  "scenario_purpose": "production", "input_hash": ""})
     if not base or not idem:
         return _replan_fail("MISSING_REPLAN_ARGS", "replan 需要 base_plan_version 与 idempotency_key")
     if not isinstance(event, dict) or not event:
@@ -800,6 +855,7 @@ async def m5_replan_schedule(payload: dict[str, Any], ctx: dict[str, Any]) -> di
     )
     return {
         "success": not result["data"].get("blocks"),
+        "code": _block_code(result["data"].get("blocks")),
         "data": {
             "result": {"schedule": new_schedule, "blocks": result["data"].get("blocks", [])},
             "scenario_purpose": base_plan.get("scenario_purpose", "production"),
@@ -807,6 +863,9 @@ async def m5_replan_schedule(payload: dict[str, Any], ctx: dict[str, Any]) -> di
             "plan_version": new_version,
             "parent_plan_version": base,
             "event": event,
+            # 重排只产出待审批候选：显式回传 lifecycle_status，供编排层按
+            # "产出 draft 计划" 统一开 Apply Gate（不要靠工具名硬编码判断）。
+            "lifecycle_status": "draft",
         },
         "errors": [{"code": "BLOCKED_INPUT", "message": b.get("reason", ""), "details": [b]}
                    for b in result["data"].get("blocks", [])],
@@ -819,16 +878,55 @@ async def m5_replan_schedule(payload: dict[str, Any], ctx: dict[str, Any]) -> di
 # knowledge tools
 # ---------------------------------------------------------------------------
 
+def _flatten_feature_pairs(value: Any, prefix: str = "") -> dict[str, str]:
+    """把嵌套特征字典压成 path -> 归一化字符串 的扁平对，便于确定性比较。"""
+    pairs: dict[str, str] = {}
+    if isinstance(value, dict):
+        for key, item in value.items():
+            child = f"{prefix}.{key}" if prefix else str(key)
+            pairs.update(_flatten_feature_pairs(item, child))
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            pairs.update(_flatten_feature_pairs(item, f"{prefix}[{index}]"))
+    elif value is not None:
+        pairs[prefix] = str(value).strip().lower()
+    return pairs
+
+
+def _feature_match_score(query_features: Any, case_features: Any) -> float:
+    """确定性特征重叠度：命中的查询字段对 ÷ 查询字段对总数（0..1）。
+
+    只做等值比较（无模型调用、无相似度猜测）；查询没有可比较字段时返回 0，
+    由调用方回退到记录时间排序。
+    """
+    query = _flatten_feature_pairs(query_features or {})
+    if not query:
+        return 0.0
+    case = _flatten_feature_pairs(case_features or {})
+    matched = sum(1 for key, value in query.items() if case.get(key) == value)
+    return round(matched / len(query), 4)
+
+
 async def m5_search_knowledge(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     repo = _repo(ctx)
     outcome = payload.get("outcome_filter")
     tag = payload.get("tag_filter")
+    features = payload.get("features") if isinstance(payload.get("features"), dict) else {}
     hits = repo.list_knowledge(outcome_filter=outcome, tag_filter=tag)
     if tag:
         hits = [h for h in hits if tag in (h.get("tags") or [])]
+    scored = [
+        {**hit, "match_score": _feature_match_score(features, hit.get("features") or {})}
+        for hit in hits
+    ]
+    # 分数优先，同分按记录时间倒序（与无特征时的旧行为一致）
+    scored.sort(key=lambda item: (item["match_score"], str(item.get("created_at") or "")), reverse=True)
+    cases_with_features = sum(1 for hit in hits if hit.get("features"))
     return {"success": True,
-            "data": {"hits": hits[: int(payload.get("top_k") or 5)],
+            "data": {"hits": scored[: int(payload.get("top_k") or 5)],
                      "total_cases_scanned": len(hits),
+                     "similarity_basis": "feature_overlap" if (features and cases_with_features) else "recency",
+                     "cases_with_features": cases_with_features,
                      "generated_at": _now_iso()},
             "errors": [], "trace_id": _trace(ctx, "m5-search-knowledge"),
             "evidence": [_evidence("m5", "knowledge", f"searched {len(hits)} cases")]}
@@ -842,6 +940,8 @@ async def m5_record_knowledge(payload: dict[str, Any], ctx: dict[str, Any]) -> d
         # record_m5_knowledge output schema requires a real 64-char
         # input_sha256 and a persisted plan_version; a missing authoritative
         # plan therefore fails closed (HTTP-level error semantics).
+        # V2 信封例外：该合同 data.required 为 11 个业务字段，返回错误信封会
+        # 直接过不了 registry 出参校验（registry.py:138），故保留异常语义。
         raise M5RepositoryError("PLAN_NOT_FOUND",
                                 f"计划 {plan_version} 不存在，无法沉淀知识")
     schedule = plan.get("schedule") or {}
@@ -944,13 +1044,20 @@ async def m5_message_delivery(payload: dict[str, Any], ctx: dict[str, Any]) -> d
 # advise_m5_schedule
 # ---------------------------------------------------------------------------
 
-async def m5_advise_schedule(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    metrics = payload.get("metrics") or {}
-    operations = payload.get("operations") or []
+def _advice_items(metrics: Any, operations: Any) -> list[dict[str, Any]]:
+    """PMC 规则建议（催料/协商交期/保持计划）。
+
+    ``advise_m5_schedule`` 与 ``run_m5_intelligent_schedule(enable_advise=true)``
+    共用同一实现，避免同一能力两处规则漂移。
+    """
+    metrics = metrics if isinstance(metrics, dict) else {}
+    operations = operations if isinstance(operations, list) else []
     on_time = metrics.get("on_time_rate")
     tardiness = metrics.get("total_tardiness_minutes") or 0
     late_by_order: dict[str, float] = {}
     for op in operations:
+        if not isinstance(op, dict):
+            continue
         oid = str(op.get("order_id") or op.get("order_line_id") or "?")
         delta = op.get("tardiness_minutes")
         if delta is not None:
@@ -958,7 +1065,7 @@ async def m5_advise_schedule(payload: dict[str, Any], ctx: dict[str, Any]) -> di
                 late_by_order[oid] = max(late_by_order.get(oid, 0.0), float(delta))
             except (TypeError, ValueError):
                 continue
-    items = []
+    items: list[dict[str, Any]] = []
     if tardiness and float(tardiness) > 0:
         items.append({"action": "expedite", "kind": "material",
                       "evidence": [f"total_tardiness_minutes={tardiness}"],
@@ -971,6 +1078,11 @@ async def m5_advise_schedule(payload: dict[str, Any], ctx: dict[str, Any]) -> di
     if on_time is not None and float(on_time) >= 100:
         items.append({"action": "keep", "kind": "schedule",
                       "evidence": ["on_time_rate=100"], "note": "当前计划满足交期，无需调整"})
+    return items
+
+
+async def m5_advise_schedule(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    items = _advice_items(payload.get("metrics") or {}, payload.get("operations") or [])
     return {"success": True,
             "data": {"plan_version": payload.get("plan_version"), "items": items,
                      "summary": f"{len(items)} 条建议", "source": "rule_based",
@@ -997,11 +1109,11 @@ async def m5_intelligent_schedule(payload: dict[str, Any], ctx: dict[str, Any]) 
     schedule = result["data"]["schedule"]
     data = {"schedule": schedule}
     if payload.get("enable_advise"):
-        data["advice"] = {"items": [
-            {"action": "review", "kind": "validation",
-             "evidence": schedule.get("validation_report", {}).get("errors", []) or [],
-             "note": "validation-failed 候选不允许进入生产发布"}
-        ]}
+        # 与 advise_m5_schedule 共用同一规则实现，避免两处建议逻辑漂移
+        data["advice"] = {
+            "items": _advice_items(schedule.get("metrics") or {}, schedule.get("operations") or []),
+            "source": "rule_based",
+        }
     if payload.get("enable_audit"):
         data["audit"] = {"input_hash": result["data"].get("input_hash"),
                          "solver": schedule.get("algorithm_version"),
@@ -1012,6 +1124,7 @@ async def m5_intelligent_schedule(payload: dict[str, Any], ctx: dict[str, Any]) 
     data["knowledge_case"] = {"persisted": False}
     data["messages"] = []
     return {"success": not schedule.get("blocks"),
+            "code": _block_code(schedule.get("blocks")),
             "data": data,
             "errors": [{"code": "BLOCKED_INPUT", "message": b.get("reason", ""), "details": [b]}
                        for b in schedule.get("blocks", [])],
@@ -1027,17 +1140,53 @@ async def m5_intelligent_schedule(payload: dict[str, Any], ctx: dict[str, Any]) 
 async def m5_procurement_plan(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     scenario_id = str(payload.get("scenario_id") or "")
     request = {**payload, "scenario_purpose": _purpose_of(payload)}
+    order_kitting = [x for x in (payload.get("order_kitting") or []) if isinstance(x, dict)]
+    material_availability = [x for x in (payload.get("material_availability") or []) if isinstance(x, dict)]
+    if not order_kitting:
+        # 没有权威齐套事实就没有需求基线：按订单行编造占位缺口等于伪造事实。
+        return {
+            "success": False,
+            "status": "blocked",
+            "code": "BLOCKED_INPUT",
+            "data": {"scenario_id": scenario_id,
+                     "missing_fields": ["order_kitting"],
+                     "recovery": "请提供权威齐套事实（order_kitting: material_code/required_qty）后重试；"
+                                 "本工具不按订单行编造占位缺口"},
+            "errors": [{"code": "MISSING_KITTING_FACTS",
+                        "message": "缺少 order_kitting 齐套事实，无法计算物料采购需求",
+                        "details": []}],
+            "trace_id": _trace(ctx, "m5-procurement"),
+            "evidence": [_evidence("m5", "procurement_proposal",
+                                   "no order_kitting facts: fail-closed (no placeholder)")],
+        }
+    available = {str(x.get("material_code")): x for x in material_availability}
+    kitting = {str(x.get("material_code")): x for x in order_kitting}
+    missing_availability = sorted(
+        code for code in kitting if code and code not in available
+    )
+    if missing_availability:
+        # 齐套需求有、可用量事实没有：不得用 0 冒充「全缺」，先补齐权威事实。
+        return {
+            "success": False,
+            "status": "blocked",
+            "code": "BLOCKED_INPUT",
+            "data": {"scenario_id": scenario_id,
+                     "missing_fields": [f"material_availability[{code}]" for code in missing_availability],
+                     "recovery": "请补齐这些物料的权威可用量事实（material_availability: "
+                                 "material_code/available_qty）后重试；本工具不把缺失可用量当成 0"},
+            "errors": [{"code": "MISSING_MATERIAL_AVAILABILITY",
+                        "message": "缺少齐套物料的可用量事实：" + ", ".join(missing_availability),
+                        "details": missing_availability}],
+            "trace_id": _trace(ctx, "m5-procurement"),
+            "evidence": [_evidence("m5", "procurement_proposal",
+                                   "missing availability facts: fail-closed")],
+        }
     try:
         result = run_pmc_v2(request)
     except (PmcError, M5RepositoryError) as exc:
         return _blocked_result(str(getattr(exc, "message", exc)), _trace(ctx, "m5-procurement"),
                                code="BLOCKED_INPUT")
-    bundle = result["data"]["input_package"]
-    order_kitting = request.get("order_kitting") or []
-    material_availability = request.get("material_availability") or []
     lines = []
-    available = {str(x.get("material_code")): x for x in material_availability if isinstance(x, dict)}
-    kitting = {str(x.get("material_code")): x for x in order_kitting if isinstance(x, dict)}
     for material_code, kit in kitting.items():
         demand = float(kit.get("required_qty") or 0)
         on_hand = float((available.get(material_code) or {}).get("available_qty") or 0)
@@ -1049,16 +1198,6 @@ async def m5_procurement_plan(payload: dict[str, Any], ctx: dict[str, Any]) -> d
             "status": "proposal",
             "note": "只生成 M3/M4 proposal，不写入库存或采购事实",
         })
-    if not lines and bundle.get("order_snapshots"):
-        for order in bundle["order_snapshots"]:
-            for line in order.get("lines", []):
-                lines.append({
-                    "material_code": str(line.get("product_code") or ""),
-                    "required_qty": float(line.get("qty") or 0), "available_qty": 0,
-                    "shortage_qty": float(line.get("qty") or 0),
-                    "status": "proposal_placeholder",
-                    "note": "无 BOM/齐套事实时按订单行给出占位，需 M3/M4 权威输入确认",
-                })
     shortage_count = sum(1 for x in lines if x.get("shortage_qty", 0) > 0)
     proposal = {
         "scenario_id": scenario_id, "generated_at": _now_iso(),
@@ -1071,7 +1210,8 @@ async def m5_procurement_plan(payload: dict[str, Any], ctx: dict[str, Any]) -> d
     return {"success": True, "data": proposal, "errors": [],
             "trace_id": _trace(ctx, "m5-procurement"),
             "evidence": [_evidence("m5", "procurement_proposal",
-                                   f"{scenario_id}: {len(lines)} material lines (proposal only)")]}
+                                   f"{scenario_id}: {len(lines)} material lines (proposal only, "
+                                   f"input_hash={result['data'].get('input_hash')})")]}
 
 
 # ---------------------------------------------------------------------------

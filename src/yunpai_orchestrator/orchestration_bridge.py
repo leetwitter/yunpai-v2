@@ -293,17 +293,58 @@ def _read_m0_product_overview(state: RunState, product_code: str) -> dict[str, A
         return {}
 
 
+def _m0_local_entities(entity_type: str, tenant_id: str, db_path: str) -> list[dict[str, Any]]:
+    """进程内读 M0 canonical（``YUNPAI_M0_DB``）——唯一允许的本地读口。
+
+    父会话 M0 读口裁决（2026-09-09）：一律走 ``m0_backend.M0Store.list_entities``，
+    **禁止**直连 sqlite3 读 ``canonical_entities``。V2 没有 INT 的 ``fact_gateway``，
+    因此读取处做一次形状归一化：``payload.attributes`` 并入顶层（顶层优先），
+    兼容 SOP 文档把 route_steps 放在 attributes 下的形状；设备/工位/人员/日历
+    在 M0 是平铺形状，归一化对它们是无操作。
+    """
+    from .m0_backend import M0Store
+
+    rows = M0Store(db_path).list_entities(entity_type, tenant_id=tenant_id).get("entities") or []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        payload = row.get("payload_json")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except ValueError:
+                continue
+        if not isinstance(payload, dict):
+            continue
+        attributes = payload.get("attributes") if isinstance(payload.get("attributes"), dict) else {}
+        out.append({"canonical_key": row.get("canonical_key"), **attributes, **payload})
+    return out
+
+
 def _read_m0_entities(state: RunState, entity_type: str) -> list[dict[str, Any]]:
     """按 entity_type 读回 M0 canonical 已批准实体（payload_json 列表）。
 
     M0 canonical 是通用 envelope；设备/工位/人员/模治具/日历分别以
     equipment_master/station_master/worker_master/tooling_master/production_calendar
     落库。读不到或未审批时返回空列表，调用方失败关闭。
+
+    读口优先级：``M0_URL`` 未配置时读本地 canonical 库（``YUNPAI_M0_DB``，
+    默认 ``runtime/yunpai-m0.sqlite``；库文件不存在则返回空，不创建空库）；
+    配置了 ``M0_URL`` 时保持原 HTTP 行为。
     """
+    from pathlib import Path
+
     base_url = str(os.getenv("M0_URL") or "").rstrip("/")
     tenant_id = str(state.get("tenant_id") or "").strip() or "default"
+    local_db = str(os.getenv("YUNPAI_M0_DB") or "runtime/yunpai-m0.sqlite")
     if not base_url:
-        return []
+        if not Path(local_db).exists():
+            return []
+        try:
+            return _m0_local_entities(entity_type, tenant_id, local_db)
+        except Exception:  # noqa: BLE001 —— 桥接读失败按「读不到」处理，调用方失败关闭
+            return []
     url = f"{base_url}/api/m0/catalog/entities?entity_type={entity_type}&tenant_id={tenant_id}"
     request = Request(url, headers={"X-Tenant-ID": tenant_id, "X-Yunpai-Tenant": tenant_id, "Accept": "application/json"})
     try:

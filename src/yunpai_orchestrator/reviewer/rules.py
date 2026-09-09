@@ -3,6 +3,10 @@
 迁移对照（旧分支 → 规则条目）：
 - ingest_document: needs_review / overall_confidence<0.8 → gate review（M1 低置信）
 - solve_scheduling: lifecycle_status=="draft" → gate apply（M5 发布门）
+- replan_m5_schedule: lifecycle_status=="draft" → gate apply（M5 重排候选门）
+- dispatch_m5_schedule: status=="pending" → gate authorization（M5 派工外部副作用面）
+- prepare_m5_department_message / record_m5_knowledge: success → gate authorization
+  （M5 本地写操作；旧实现是执行前授权门，V2 无 preflight → 等价的后置授权门）
 - data_import_commit: success==False → fail
 - run_bom_sop_workflow: 产出工程草稿 → gate engineering（禁当 retry 用）
 - ingest_canonical: 候选落库 → gate candidate
@@ -12,6 +16,12 @@
   （补数可重跑）；其余写操作 → gate authorization（执行后人工授权，approve 不重跑副作用）
 默认规则：manifest spec.review_gate ∈ {candidate,review,engineering,procurement,schedule}
 且未授权时 → 对应 Gate（schedule 归一化为 apply）。
+
+> M5 覆盖边界（rows-S6 ⑦）：`ingest_m5_planning_snapshot` 是两条 M5 workflow 的
+> 装配步骤，旧实现的前置授权门对 workflow 步骤不生效 → V2 不加新门，改由
+> 合同声明 `review_gate="data"` + `BLOCKED_INPUT` 规则兜底（六类快照不齐即开
+> data 门）；`get_m5_pmc_progress`/`record_m5_knowledge` 的失败是合同强制的
+> 硬失败（见 m5_tools.py 头注），不走门。
 """
 from __future__ import annotations
 
@@ -53,6 +63,22 @@ RULES: dict[str, list[Check]] = {
     "solve_scheduling": [
         Check("data.lifecycle_status", "eq", "draft", action=f"gate:{GATE_APPLY}",
               reason="M5 排程为 draft，发布须人工 apply Gate（pressure_only 亦禁自动发布）"),
+    ],
+    "replan_m5_schedule": [
+        Check("data.lifecycle_status", "eq", "draft", action=f"gate:{GATE_APPLY}",
+              reason="M5 重排产出 draft 候选版本，设置 current/发布须人工 apply Gate"),
+    ],
+    "dispatch_m5_schedule": [
+        Check("data.status", "eq", "pending", action="gate:authorization",
+              reason="M5 派工写入 durable pending 记录（外部副作用面），执行前须人工授权"),
+    ],
+    "prepare_m5_department_message": [
+        Check("success", "eq", True, action="gate:authorization",
+              reason="M5 部门消息草稿落库须人工授权；审批/发送仍在外部系统，Agent 无审批工具"),
+    ],
+    "record_m5_knowledge": [
+        Check("success", "eq", True, action="gate:authorization",
+              reason="M5 知识案例沉淀是本地写操作，须人工授权（旧实现为前置授权门）"),
     ],
     "data_import_commit": [
         Check("success", "eq", False, action="fail", reason="M0 发布失败（fail-closed：回读计数为 0）"),

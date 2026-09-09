@@ -185,6 +185,89 @@ def _stamp_engineering_approval(state: dict[str, Any], gate: dict[str, Any]) -> 
     return outputs
 
 
+def _apply_m5_release(state: dict[str, Any], gate: dict[str, Any],
+                      actor: str = "") -> dict[str, Any] | None:
+    """apply 门批准 → M5 draft 计划真实发布（approved→released + head CAS）。
+
+    书二 §6.2「apply 释放走 M5 head CAS〔迁〕`_apply_m5_release` 语义」。
+    仅当 M5 库可用（``request.m5_db_path`` 或 ``YUNPAI_M5_DB``）且该工具产出里
+    带 ``plan_version``/``scenario_id`` 时生效；缺库或缺版本时**不触碰库、也不把
+    RunState 标成 released**（preview/未持久化求解的真实状态）。
+    发布冲突不抛异常（抛错会把 resume 值固化进 checkpoint，Gate 通道会卡死）：
+    改为把冲突写回 ``pending_gate``，保持人工可恢复。
+    """
+    if str(gate.get("type")) != "apply":
+        return None
+    import os
+
+    tool = str(gate.get("tool") or "")
+    outputs = dict(state.get("outputs") or {})
+    envelope = outputs.get(tool)
+    if not isinstance(envelope, dict) or not isinstance(envelope.get("data"), dict):
+        return None
+    data = dict(envelope["data"])
+    plan_version = str(data.get("plan_version") or "")
+    schedule = data.get("schedule") if isinstance(data.get("schedule"), dict) else {}
+    result_block = data.get("result") if isinstance(data.get("result"), dict) else {}
+    nested_schedule = result_block.get("schedule") if isinstance(result_block.get("schedule"), dict) else {}
+    scenario_id = str(
+        data.get("scenario_id") or schedule.get("scenario_id")
+        or nested_schedule.get("scenario_id")
+        or (state.get("request") or {}).get("scenario_id") or ""
+    )
+    db_path = str((state.get("request") or {}).get("m5_db_path") or os.getenv("YUNPAI_M5_DB") or "")
+    if not plan_version or not scenario_id or not db_path:
+        return None
+    from .m5_repository import M5Repository, M5RepositoryError
+
+    repo = M5Repository(db_path)
+    expected = (state.get("request") or {}).get("expected_head_revision")
+    expected_revision = int(expected) if expected is not None and str(expected).isdigit() else None
+    readback: dict[str, Any] = {}
+    try:
+        applied = repo.apply_release(
+            plan_version, scenario_id,
+            tenant_id=str(state.get("tenant_id") or "default"), gate="apply",
+            actor=str(actor or ""), task_id=str(state.get("task_id") or ""),
+            trace_id=f"{state.get('task_id', 'task')}:apply",
+            expected_head_revision=expected_revision,
+        )
+        readback = repo.readback_after_release(plan_version, scenario_id)
+    except M5RepositoryError as exc:
+        existing = repo.get_plan(plan_version)
+        head = repo.get_head(scenario_id)
+        if (exc.code == "PLAN_PROTECTED" and existing
+                and existing.get("lifecycle_status") == "released"
+                and (head or {}).get("head_plan_version") == plan_version):
+            # 幂等重放：同计划已 released 且 head 指向它 → 视为已应用
+            readback = repo.readback_after_release(plan_version, scenario_id)
+            applied = {"head_revision": readback.get("head_revision")}
+        else:
+            trace = list(state.get("trace") or [])
+            trace.append({"event": "m5.release_conflict", "code": exc.code,
+                          "message": exc.message, "at": now_iso()})
+            # 冲突不得静默走 completed：由调用方撤回本次授权并把步骤退回 pending，
+            # 让 apply 门重新打开（人工可恢复）。
+            return {"release_conflict": {"code": exc.code, "message": exc.message},
+                    "trace": trace}
+    data.update({
+        "lifecycle_status": "released",
+        "head_revision": applied.get("head_revision") or readback.get("head_revision"),
+        "released_at": (repo.get_plan(plan_version) or {}).get("released_at"),
+    })
+    evidence = list(envelope.get("evidence") or [])
+    evidence.append({"module": "m5", "source_ref": plan_version,
+                     "evidence_ref": f"m5:{plan_version}:release",
+                     "detail": f"Apply Gate 真实发布：lifecycle=released, "
+                               f"head revision={data['head_revision']}"})
+    trace = list(state.get("trace") or [])
+    trace.append({"event": "m5.released", "plan_version": plan_version,
+                  "scenario_id": scenario_id, "head_revision": data["head_revision"],
+                  "at": now_iso()})
+    return {"outputs": {**outputs, tool: {**envelope, "data": data, "evidence": evidence}},
+            "trace": trace}
+
+
 def reviewer_check_node(deps: GraphDeps) -> Callable:
     async def _node(state: RunStateV2) -> dict[str, Any]:
         engine = deps.engine
@@ -247,6 +330,25 @@ def reviewer_check_node(deps: GraphDeps) -> Callable:
                 stamped = _stamp_engineering_approval(state, gate)
                 if stamped is not None:
                     updates["outputs"] = stamped
+                released = _apply_m5_release(state, gate,
+                                             actor=str((decision or {}).get("actor") or ""))
+                if released is not None:
+                    conflict = released.pop("release_conflict", None)
+                    if conflict:
+                        # head CAS 冲突：撤回本次授权 + 步骤退回 pending，
+                        # 重派发后 apply 门会重新打开（不把冲突吞成 completed）
+                        plan = engine.mark(plan, step_id, "pending")
+                        step = {**step, "status": "pending"}
+                        updates = {**updates, **released,
+                                   "plan": plan, "current_step": step,
+                                   "pending_gate": {**gate, "conflict": conflict},
+                                   "authorized_steps": [
+                                       s for s in (state.get("authorized_steps") or [])
+                                       if s != tool]}
+                    else:
+                        if "outputs" in released and "outputs" in updates:
+                            released["outputs"] = {**updates["outputs"], **released["outputs"]}
+                        updates = {**updates, **released}
                 return updates
             if normalized == "reject":
                 plan = engine.mark(plan, step_id, "skipped")
