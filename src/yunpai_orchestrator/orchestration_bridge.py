@@ -302,6 +302,15 @@ def _read_m0_entities(state: RunState, entity_type: str) -> list[dict[str, Any]]
     """
     base_url = str(os.getenv("M0_URL") or "").rstrip("/")
     tenant_id = str(state.get("tenant_id") or "").strip() or "default"
+    # S1 C4：配置 YUNPAI_M0_DB 时走进程内 M0 canonical 读（m0_facts → M0Store.list_entities），
+    # 不再依赖 M0_URL HTTP 假站位；未配置时保持原 HTTP 行为（不隐式读 runtime 大库）。
+    if os.getenv("YUNPAI_M0_DB"):
+        try:
+            from . import m0_facts
+
+            return m0_facts.list_entities(entity_type, tenant_id=tenant_id)
+        except Exception:
+            return []
     if not base_url:
         return []
     url = f"{base_url}/api/m0/catalog/entities?entity_type={entity_type}&tenant_id={tenant_id}"
@@ -965,6 +974,34 @@ def bridge_payload(state: RunState, tool: str) -> dict[str, Any]:
                            missing_fields=["ingest_document 输出或原始附件"],
                            required_tool="ingest_document")
         payload: dict[str, Any] = {"files": [file_value]}
+        return payload
+    if tool == "data_import_preview":
+        # S1 C3：预览需要批次号；从上游 data_import_run 产出回填（我方 graph.py:852-854 同口径）。
+        imported = output_data(state, "data_import_run")
+        batch_id = str(request.get("batch_id") or imported.get("batch_id") or imported.get("id") or "")
+        if not batch_id:
+            return blocked(state, source_module="m0", tool=tool,
+                           missing_fields=["data_import_run.batch_id"],
+                           required_tool="data_import_run")
+        return {"batch_id": batch_id}
+    if tool == "data_import_resolve":
+        # S1 C3：裁决必须显式给 kind/action（禁止伪造裁决），批次号从上游回填。
+        imported = output_data(state, "data_import_run")
+        batch_id = str(request.get("batch_id") or imported.get("batch_id") or imported.get("id") or "")
+        if not batch_id:
+            return blocked(state, source_module="m0", tool=tool,
+                           missing_fields=["data_import_run.batch_id"],
+                           required_tool="data_import_run")
+        kind = str(request.get("kind") or "")
+        action = str(request.get("action") or "")
+        if kind not in {"entity", "mapping"}:
+            raise ValueError("data_import_resolve 需要显式 kind(entity|mapping)，禁止伪造裁决")
+        if action not in {"approve", "reject"}:
+            raise ValueError("data_import_resolve 需要显式 action(approve|reject)，禁止伪造裁决")
+        payload: dict[str, Any] = {"batch_id": batch_id, "kind": kind, "action": action}
+        for key in ("id", "candidate_id", "note"):
+            if request.get(key) not in (None, ""):
+                payload[key] = request[key]
         return payload
     if tool == "data_import_commit":
         imported = output_data(state, "data_import_run")
