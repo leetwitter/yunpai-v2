@@ -278,6 +278,22 @@ async def _dispatch_registered_tool(
             if key not in {"operation", "tool", "tool_payload"}
         }
     tool_context = {key: value for key, value in context.items() if key != "_tool_registry"}
+    # R16（父会话裁决）：Skill 派发只取 payload，不经 orchestration_bridge 装配，而
+    # ``get_material_readiness_snapshot`` / ``export_m3_procurement_suggestions`` /
+    # ``query_m4_material_supply_snapshot`` 的 ``input_schema.required`` 含 ``tenant_id``
+    # → 经 Skill 调用直接 ``'tenant_id' is a required property``。此处**只注入该键**
+    # （契约不改），边界：
+    #   * 调用方已显式给出 tenant_id → 不覆盖（调用方优先）；
+    #   * 仅当该工具合同 required 含 tenant_id 时注入（不给 additionalProperties:false
+    #     的工具塞未声明字段，避免入参校验失败）；
+    #   * ctx 无 tenant_id → 不注入（让合同校验如实报缺参，不伪造租户）。
+    if "tenant_id" not in tool_payload:
+        spec = getattr(registry, "specs", {}).get(tool)
+        required = (getattr(spec, "input_schema", None) or {}).get("required") or []
+        if "tenant_id" in required:
+            tenant_id = str(tool_context.get("tenant_id") or "").strip()
+            if tenant_id:
+                tool_payload = {**tool_payload, "tenant_id": tenant_id}
     result = await registry.call(tool, tool_payload, tool_context)
     if isinstance(result, dict):
         output = dict(result)
